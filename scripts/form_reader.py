@@ -84,15 +84,28 @@ def normalise_response(raw_resp: dict) -> dict:
     """Flatten a raw FormResponse into a clean dict."""
     answers = {}
     for q_id, ans_block in raw_resp.get("answers", {}).items():
-        text_answers = ans_block.get("textAnswers", {}).get("answers", [])
-        answers[q_id] = [a.get("value", "") for a in text_answers]
+        answer = {
+            "questionId": ans_block.get("questionId", q_id),
+            "textAnswers": [
+                a.get("value", "")
+                for a in ans_block.get("textAnswers", {}).get("answers", [])
+            ],
+            "fileUploadAnswers": ans_block.get("fileUploadAnswers", {}).get("answers", []),
+        }
+        if "grade" in ans_block:
+            answer["grade"] = ans_block["grade"]
+        answers[q_id] = answer
 
-    return {
+    normalised = {
         "responseId":       raw_resp.get("responseId", ""),
         "createTime":       raw_resp.get("createTime", ""),
         "lastSubmittedTime": raw_resp.get("lastSubmittedTime", ""),
+        "respondentEmail":  raw_resp.get("respondentEmail", ""),
         "answers":          answers,
     }
+    if "totalScore" in raw_resp:
+        normalised["totalScore"] = raw_resp["totalScore"]
+    return normalised
 
 
 # ─── Main ─────────────────────────────────────────────────────────────────────

@@ -140,11 +140,24 @@ def list_responses(form_id: str, page_size: int = 100,
     Fetch all responses. after = RFC3339 timestamp filter.
     Returns flat list of FormResponse dicts.
     """
-    p = {"formId": form_id, "pageSize": page_size}
-    if after:
-        p["filter"] = f'timestamp > "{after}"'
-    data = run_gws(["forms", "forms", "responses", "list"], params=p)
-    return data.get("responses", [])
+    all_responses = []
+    page_token = None
+
+    while True:
+        p = {"formId": form_id, "pageSize": page_size}
+        if after:
+            p["filter"] = f'timestamp > "{after}"'
+        if page_token:
+            p["pageToken"] = page_token
+
+        data = run_gws(["forms", "forms", "responses", "list"], params=p)
+        all_responses.extend(data.get("responses", []))
+
+        page_token = data.get("nextPageToken")
+        if not page_token:
+            break
+
+    return all_responses
 
 
 def enable_quiz(form_id: str) -> dict:

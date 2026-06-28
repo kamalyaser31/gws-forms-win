@@ -26,6 +26,7 @@ Rules:
     - Requires a snapshot in SKILL_ROOT/snapshots/<form_id>_snapshot.json.
     - Each op runs in its own batchUpdate call (sequential, not batched together).
     - delete_item and move_item use item_id from the snapshot, never index.
+    - add_item, delete_item, and move_item refresh the snapshot after success.
     - Snapshot older than 30 min triggers a warning (execution continues).
 """
 
@@ -46,8 +47,10 @@ from form_builder import (          # noqa: E402
     update_form_info_request,
     enable_quiz_request,
     set_publish,
+    get_form,
 )
 from json_runner import dispatch     # reuse item dispatcher  # noqa: E402
+from form_fetcher import build_snapshot  # noqa: E402
 
 STALE_MINUTES = 30
 
@@ -84,6 +87,22 @@ def load_snapshot(form_id: str) -> dict:
     return snap
 
 
+def save_snapshot(form_id: str, snap: dict) -> None:
+    os.makedirs(SNAPSHOTS_DIR, exist_ok=True)
+    path = os.path.join(SNAPSHOTS_DIR, f"{form_id}_snapshot.json")
+    with open(path, "w", encoding="utf-8") as f:
+        json.dump(snap, f, ensure_ascii=False, indent=2)
+
+
+def refresh_snapshot(form_id: str) -> dict:
+    """Fetch and save the current form state after index-changing ops."""
+    raw = get_form(form_id)
+    snap = build_snapshot(form_id, raw)
+    save_snapshot(form_id, snap)
+    print(f"  [OK] snapshot refreshed ({snap['item_count']} item(s))")
+    return snap
+
+
 def snapshot_item_ids(snap: dict) -> set:
     return {item["itemId"] for item in snap.get("items", [])}
 
@@ -93,10 +112,15 @@ def snapshot_item_ids(snap: dict) -> set:
 def op_update_info(form_id: str, op: dict) -> None:
     title = op.get("title")
     description = op.get("description")
-    if title is None and description is None:
-        print("[ERROR] 'update_info' requires at least 'title' or 'description'.")
+    document_title = op.get("document_title")
+    if title is None and description is None and document_title is None:
+        print("[ERROR] 'update_info' requires at least 'title', 'description', or 'document_title'.")
         sys.exit(1)
-    req = update_form_info_request(title=title, description=description)
+    req = update_form_info_request(
+        title=title,
+        description=description,
+        document_title=document_title,
+    )
     batch_update(form_id, [req])
     print("  [OK] update_info")
 
@@ -234,6 +258,8 @@ def main():
             continue
         handler = OP_MAP[op_name]
         handler(form_id, op, snap)
+        if op_name in {"add_item", "delete_item", "move_item"}:
+            snap = refresh_snapshot(form_id)
         completed += 1
 
     print(f"\n[DONE] {completed}/{len(ops)} ops completed.")

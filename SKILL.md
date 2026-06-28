@@ -258,7 +258,7 @@ Saves: `SKILL_ROOT/snapshots/<form_id>_snapshot.json`
 {
   "form_id": "1abc...XYZ",
   "ops": [
-    { "op": "update_info",  "title": "New Title", "description": "New desc" },
+    { "op": "update_info",  "title": "New Title", "description": "New desc", "document_title": "Drive file title" },
     { "op": "add_item",     "item": {"type": "short", "q": "New Q?"}, "at_index": 3 },
     { "op": "delete_item",  "item_id": "3f2a" },
     { "op": "move_item",    "item_id": "7c1b", "to_index": 5 }
@@ -276,18 +276,17 @@ python "C:\...\scripts\form_updater.py" update.json
 
 | `op` | Required keys | Optional keys | Notes |
 |---|---|---|---|
-| `update_info` | — | `title`, `description` | At least one required |
+| `update_info` | — | `title`, `description`, `document_title` | At least one required |
 | `add_item` | `item` | `at_index` | Default: append to end |
 | `delete_item` | `item_id` | — | Resolves `item_id` to `index` via snapshot |
 | `move_item` | `item_id`, `to_index` | — | Resolves `item_id` to `index` via snapshot |
 | `enable_quiz` | — | — | — |
 | `set_publish` | `published` | `accepting` (def: true) | Warns if unsupported, continues |
 
-> [!WARNING]
+> [!NOTE]
 > Each op runs in its **own** `batchUpdate` call (not batched together).
-> Because `delete_item` and `move_item` resolve indexes from the saved snapshot,
-> do not combine several delete/move operations that depend on shifted indexes
-> without re-running `form_fetcher.py` between passes.
+> After `add_item`, `delete_item`, or `move_item`, the updater automatically
+> refreshes the snapshot so later operations use current indexes.
 
 ---
 
@@ -302,8 +301,32 @@ python "C:\...\scripts\form_reader.py" --id FORM_ID --output responses.json
 ```
 
 - Automatically paginates through **all pages** — no response limit.
+- Preserves `respondentEmail`, `totalScore`, grades, text answers, and file upload answers.
 - Rejects encoded `/e/` viewform URLs (use `--id` or Edit URL).
 - Output: `<form_id>_responses.json` (or `--output` path).
+
+---
+
+## Optional Live Smoke Test
+
+Use only on an authenticated machine where creating a real Google Form is acceptable:
+
+```powershell
+python "C:\...\scripts\json_runner.py" smoke_form.json
+python "C:\...\scripts\form_fetcher.py" --id FORM_ID_FROM_OUTPUT
+python "C:\...\scripts\form_reader.py" --id FORM_ID_FROM_OUTPUT --output smoke_responses.json
+```
+
+Minimal `smoke_form.json`:
+
+```json
+{
+  "title": "gws-forms-win smoke test",
+  "items": [
+    {"type": "short", "q": "Smoke test question?", "paragraph": false}
+  ]
+}
+```
 
 ---
 

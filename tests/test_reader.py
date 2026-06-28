@@ -147,7 +147,7 @@ class TestNormalisation:
             }
         })
         n = reader.normalise_response(raw)
-        assert n["answers"]["Q_001"] == ["Hello", "World"]
+        assert n["answers"]["Q_001"]["textAnswers"] == ["Hello", "World"]
 
     def test_multiple_questions(self):
         raw = self._raw(answers={
@@ -156,8 +156,8 @@ class TestNormalisation:
         })
         n = reader.normalise_response(raw)
         assert len(n["answers"]) == 2
-        assert n["answers"]["Q_001"] == ["A"]
-        assert n["answers"]["Q_002"] == ["B"]
+        assert n["answers"]["Q_001"]["textAnswers"] == ["A"]
+        assert n["answers"]["Q_002"]["textAnswers"] == ["B"]
 
     def test_missing_answers_field(self):
         """Response with no 'answers' key must not crash."""
@@ -171,7 +171,27 @@ class TestNormalisation:
             "Q_001": {"textAnswers": {"answers": []}}
         })
         n = reader.normalise_response(raw)
-        assert n["answers"]["Q_001"] == []
+        assert n["answers"]["Q_001"]["textAnswers"] == []
+
+    def test_rich_fields_preserved(self):
+        raw = self._raw(
+            respondentEmail="person@example.com",
+            totalScore=3,
+            answers={
+                "Q_001": {
+                    "questionId": "Q_001",
+                    "grade": {"score": 3, "correct": True},
+                    "fileUploadAnswers": {
+                        "answers": [{"fileId": "F1", "fileName": "a.pdf"}]
+                    },
+                }
+            },
+        )
+        n = reader.normalise_response(raw)
+        assert n["respondentEmail"] == "person@example.com"
+        assert n["totalScore"] == 3
+        assert n["answers"]["Q_001"]["grade"]["score"] == 3
+        assert n["answers"]["Q_001"]["fileUploadAnswers"][0]["fileId"] == "F1"
 
 
 # ─── 4. Output file ───────────────────────────────────────────────────────────

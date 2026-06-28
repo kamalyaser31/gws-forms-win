@@ -201,6 +201,13 @@ class TestOpDispatch:
         req = mock_bu.call_args[0][1][0]
         assert req["updateFormInfo"]["info"].get("description") == "Desc"
 
+    def test_update_info_document_title(self):
+        with patch.object(updater, "batch_update") as mock_bu:
+            updater.op_update_info("FID", {"op": "update_info", "document_title": "Drive Title"})
+        req = mock_bu.call_args[0][1][0]
+        assert req["updateFormInfo"]["info"]["documentTitle"] == "Drive Title"
+        assert "documentTitle" in req["updateFormInfo"]["updateMask"]
+
     def test_delete_item_uses_index_from_snapshot(self):
         snap = _snap_with_items() # item_A is at index 0
         with patch.object(updater, "batch_update") as mock_bu:
@@ -270,6 +277,25 @@ class TestOpDispatch:
         with patch.object(updater, "set_publish") as mock_sp:
             updater.op_set_publish("FID", {"op": "set_publish", "published": False})
         mock_sp.assert_called_once_with("FID", published=False, accepting=True)
+
+    def test_main_refreshes_snapshot_after_add_item(self, tmp_path, monkeypatch):
+        monkeypatch.setattr(updater, "SNAPSHOTS_DIR", str(tmp_path))
+        snap = _fresh_snapshot()
+        path = os.path.join(tmp_path, f"{FORM_ID}_snapshot.json")
+        with open(path, "w", encoding="utf-8") as f:
+            json.dump(snap, f)
+
+        spec = {"form_id": FORM_ID, "ops": [{"op": "add_item", "item": {"type": "short", "q": "Q?"}}]}
+        spec_path = os.path.join(tmp_path, "update.json")
+        with open(spec_path, "w", encoding="utf-8") as f:
+            json.dump(spec, f)
+
+        with patch.object(updater, "batch_update"), \
+             patch.object(updater, "refresh_snapshot", return_value=snap) as mock_refresh, \
+             patch.object(sys, "argv", ["form_updater.py", spec_path]):
+            updater.main()
+
+        mock_refresh.assert_called_once_with(FORM_ID)
 
 
 # ─── 5. Unknown op skipped ───────────────────────────────────────────────────
