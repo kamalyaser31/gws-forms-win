@@ -14,21 +14,14 @@ Priority order (most critical first):
 
 import json
 import os
-import sys
 import pytest
-from unittest.mock import patch, MagicMock
-from datetime import datetime, timezone
-
-# ── path setup ────────────────────────────────────────────────────────────────
-SKILL_SCRIPTS = os.path.join(
-    os.path.dirname(__file__), "..", "scripts"
-)
-sys.path.insert(0, os.path.abspath(SKILL_SCRIPTS))
+from unittest.mock import patch
+from datetime import datetime
 
 import form_fetcher as fetcher
 
-
 # ─── 1. URL parsing ───────────────────────────────────────────────────────────
+
 
 class TestExtractFormId:
 
@@ -57,12 +50,19 @@ class TestExtractFormId:
             fetcher.extract_form_id(url)
         assert exc_info.value.code == 1
 
+    def test_google_path_on_another_domain_is_rejected(self):
+        url = "https://example.com/forms/d/FORM123/edit"
+        with pytest.raises(SystemExit) as exc_info:
+            fetcher.extract_form_id(url)
+        assert exc_info.value.code == 1
+
     def test_empty_string_rejected(self):
         with pytest.raises(SystemExit):
             fetcher.extract_form_id("")
 
 
 # ─── 2. Snapshot structure ────────────────────────────────────────────────────
+
 
 class TestBuildSnapshot:
 
@@ -80,8 +80,16 @@ class TestBuildSnapshot:
 
     def test_top_level_fields_present(self):
         snap = fetcher.build_snapshot("FORM123", self._raw())
-        for field in ("form_id", "title", "description", "responderUri",
-                      "revisionId", "fetched_at", "item_count", "items"):
+        for field in (
+            "form_id",
+            "title",
+            "description",
+            "responderUri",
+            "revisionId",
+            "fetched_at",
+            "item_count",
+            "items",
+        ):
             assert field in snap, f"Missing field: {field}"
 
     def test_form_id_stored(self):
@@ -94,12 +102,24 @@ class TestBuildSnapshot:
         datetime.fromisoformat(snap["fetched_at"])
 
     def test_item_count_matches_items(self):
-        raw = self._raw(items=[
-            {"itemId": "a1", "title": "Q1",
-             "questionItem": {"question": {"textQuestion": {}, "required": True}}},
-            {"itemId": "a2", "title": "Q2",
-             "questionItem": {"question": {"choiceQuestion": {}, "required": False}}},
-        ])
+        raw = self._raw(
+            items=[
+                {
+                    "itemId": "a1",
+                    "title": "Q1",
+                    "questionItem": {
+                        "question": {"textQuestion": {}, "required": True}
+                    },
+                },
+                {
+                    "itemId": "a2",
+                    "title": "Q2",
+                    "questionItem": {
+                        "question": {"choiceQuestion": {}, "required": False}
+                    },
+                },
+            ]
+        )
         snap = fetcher.build_snapshot("FORM123", raw)
         assert snap["item_count"] == 2
         assert len(snap["items"]) == 2
@@ -110,26 +130,40 @@ class TestBuildSnapshot:
         assert snap["items"] == []
 
     def test_item_index_sequential(self):
-        raw = self._raw(items=[
-            {"itemId": "i0", "title": "Q0",
-             "questionItem": {"question": {"textQuestion": {}}}},
-            {"itemId": "i1", "title": "Q1",
-             "questionItem": {"question": {"textQuestion": {}}}},
-        ])
+        raw = self._raw(
+            items=[
+                {
+                    "itemId": "i0",
+                    "title": "Q0",
+                    "questionItem": {"question": {"textQuestion": {}}},
+                },
+                {
+                    "itemId": "i1",
+                    "title": "Q1",
+                    "questionItem": {"question": {"textQuestion": {}}},
+                },
+            ]
+        )
         snap = fetcher.build_snapshot("FORM123", raw)
         assert snap["items"][0]["index"] == 0
         assert snap["items"][1]["index"] == 1
 
     def test_item_id_stored(self):
-        raw = self._raw(items=[
-            {"itemId": "abc123", "title": "Q",
-             "questionItem": {"question": {"textQuestion": {}}}},
-        ])
+        raw = self._raw(
+            items=[
+                {
+                    "itemId": "abc123",
+                    "title": "Q",
+                    "questionItem": {"question": {"textQuestion": {}}},
+                },
+            ]
+        )
         snap = fetcher.build_snapshot("FORM123", raw)
         assert snap["items"][0]["itemId"] == "abc123"
 
 
 # ─── 3. api_type / question_type mapping ─────────────────────────────────────
+
 
 class TestItemType:
 
@@ -173,13 +207,14 @@ class TestItemType:
         assert api_t == "unknown"
 
     def test_question_without_known_type(self):
-        """questionItem with no recognized question type -> ('questionItem', 'unknown')"""
+        """An unrecognized question subtype remains visible to callers."""
         api_t, q_t = fetcher._item_type({"questionItem": {"question": {}}})
         assert api_t == "questionItem"
         assert q_t == "unknown"
 
 
 # ─── 4. Output path ───────────────────────────────────────────────────────────
+
 
 class TestOutputPath:
 
@@ -209,8 +244,12 @@ class TestOutputPath:
 
     def test_snapshot_filename_uses_form_id(self, tmp_path, monkeypatch):
         monkeypatch.setattr(fetcher, "SNAPSHOTS_DIR", str(tmp_path))
-        raw = {"info": {"title": "", "description": "", "documentTitle": ""},
-               "responderUri": "", "revisionId": "", "items": []}
+        raw = {
+            "info": {"title": "", "description": "", "documentTitle": ""},
+            "responderUri": "",
+            "revisionId": "",
+            "items": [],
+        }
         snap = fetcher.build_snapshot("MY_FORM_ID", raw)
         out = os.path.join(str(tmp_path), "MY_FORM_ID_snapshot.json")
         with open(out, "w", encoding="utf-8") as f:

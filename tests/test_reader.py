@@ -17,16 +17,12 @@ import json
 import os
 import sys
 import pytest
-from unittest.mock import patch, call, MagicMock
-
-# ── path setup ────────────────────────────────────────────────────────────────
-SKILL_SCRIPTS = os.path.join(os.path.dirname(__file__), "..", "scripts")
-sys.path.insert(0, os.path.abspath(SKILL_SCRIPTS))
+from unittest.mock import patch
 
 import form_reader as reader
 
-
 # ─── 1. Pagination ────────────────────────────────────────────────────────────
+
 
 class TestPagination:
 
@@ -72,16 +68,18 @@ class TestPagination:
         assert second_call_params.get("pageToken") == "MY_TOKEN"
 
     def test_after_filter_included_in_params(self):
-        with patch.object(reader, "run_gws",
-                          return_value={"responses": []}) as mock_gws:
+        with patch.object(
+            reader, "run_gws", return_value={"responses": []}
+        ) as mock_gws:
             reader.fetch_all_responses("FORM_ID", after="2026-01-01T00:00:00Z")
         params = mock_gws.call_args[1]["params"]
         assert "filter" in params
         assert "2026-01-01T00:00:00Z" in params["filter"]
 
     def test_no_after_no_filter_key(self):
-        with patch.object(reader, "run_gws",
-                          return_value={"responses": []}) as mock_gws:
+        with patch.object(
+            reader, "run_gws", return_value={"responses": []}
+        ) as mock_gws:
             reader.fetch_all_responses("FORM_ID", after="")
         params = mock_gws.call_args[1]["params"]
         assert "filter" not in params
@@ -93,6 +91,7 @@ class TestPagination:
 
 
 # ─── 2. URL parsing ───────────────────────────────────────────────────────────
+
 
 class TestUrlParsing:
 
@@ -118,6 +117,7 @@ class TestUrlParsing:
 
 # ─── 3. Response normalisation ───────────────────────────────────────────────
 
+
 class TestNormalisation:
 
     def _raw(self, **kwargs):
@@ -139,21 +139,23 @@ class TestNormalisation:
         assert n["createTime"] == "2026-01-01T10:00:00Z"
 
     def test_text_answer_flattened(self):
-        raw = self._raw(answers={
-            "Q_001": {
-                "textAnswers": {
-                    "answers": [{"value": "Hello"}, {"value": "World"}]
+        raw = self._raw(
+            answers={
+                "Q_001": {
+                    "textAnswers": {"answers": [{"value": "Hello"}, {"value": "World"}]}
                 }
             }
-        })
+        )
         n = reader.normalise_response(raw)
         assert n["answers"]["Q_001"]["textAnswers"] == ["Hello", "World"]
 
     def test_multiple_questions(self):
-        raw = self._raw(answers={
-            "Q_001": {"textAnswers": {"answers": [{"value": "A"}]}},
-            "Q_002": {"textAnswers": {"answers": [{"value": "B"}]}},
-        })
+        raw = self._raw(
+            answers={
+                "Q_001": {"textAnswers": {"answers": [{"value": "A"}]}},
+                "Q_002": {"textAnswers": {"answers": [{"value": "B"}]}},
+            }
+        )
         n = reader.normalise_response(raw)
         assert len(n["answers"]) == 2
         assert n["answers"]["Q_001"]["textAnswers"] == ["A"]
@@ -161,15 +163,16 @@ class TestNormalisation:
 
     def test_missing_answers_field(self):
         """Response with no 'answers' key must not crash."""
-        raw = {"responseId": "R1", "createTime": "2026-01-01T00:00:00Z",
-               "lastSubmittedTime": ""}
+        raw = {
+            "responseId": "R1",
+            "createTime": "2026-01-01T00:00:00Z",
+            "lastSubmittedTime": "",
+        }
         n = reader.normalise_response(raw)
         assert n["answers"] == {}
 
     def test_empty_text_answers(self):
-        raw = self._raw(answers={
-            "Q_001": {"textAnswers": {"answers": []}}
-        })
+        raw = self._raw(answers={"Q_001": {"textAnswers": {"answers": []}}})
         n = reader.normalise_response(raw)
         assert n["answers"]["Q_001"]["textAnswers"] == []
 
@@ -196,17 +199,24 @@ class TestNormalisation:
 
 # ─── 4. Output file ───────────────────────────────────────────────────────────
 
+
 class TestOutputFile:
 
     def test_output_written_with_correct_structure(self, tmp_path):
         out_path = os.path.join(tmp_path, "out.json")
-        pages = [{"responseId": "R1", "createTime": "", "lastSubmittedTime": "",
-                  "answers": {}}]
-        with patch.object(reader, "run_gws",
-                          return_value={"responses": pages}), \
-             patch.object(sys, "argv",
-                          ["form_reader.py", "--id", "FORMXYZ",
-                           "--output", out_path]):
+        pages = [
+            {
+                "responseId": "R1",
+                "createTime": "",
+                "lastSubmittedTime": "",
+                "answers": {},
+            }
+        ]
+        with patch.object(
+            reader, "run_gws", return_value={"responses": pages}
+        ), patch.object(
+            sys, "argv", ["form_reader.py", "--id", "FORMXYZ", "--output", out_path]
+        ):
             reader.main()
 
         with open(out_path, encoding="utf-8") as f:
@@ -220,16 +230,17 @@ class TestOutputFile:
     def test_default_output_filename(self, tmp_path, monkeypatch):
         """Without --output, file should be named <form_id>_responses.json."""
         monkeypatch.chdir(tmp_path)
-        with patch.object(reader, "run_gws", return_value={"responses": []}), \
-             patch.object(sys, "argv", ["form_reader.py", "--id", "MYFORM"]):
+        with patch.object(
+            reader, "run_gws", return_value={"responses": []}
+        ), patch.object(sys, "argv", ["form_reader.py", "--id", "MYFORM"]):
             reader.main()
         assert os.path.exists(os.path.join(tmp_path, "MYFORM_responses.json"))
 
     def test_zero_responses_file_written(self, tmp_path):
         out_path = os.path.join(tmp_path, "zero.json")
-        with patch.object(reader, "run_gws", return_value={}), \
-             patch.object(sys, "argv",
-                          ["form_reader.py", "--id", "F", "--output", out_path]):
+        with patch.object(reader, "run_gws", return_value={}), patch.object(
+            sys, "argv", ["form_reader.py", "--id", "F", "--output", out_path]
+        ):
             reader.main()
         data = json.loads(open(out_path, encoding="utf-8").read())
         assert data["total"] == 0

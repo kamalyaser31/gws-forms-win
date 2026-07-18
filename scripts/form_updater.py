@@ -31,10 +31,9 @@ Rules:
 """
 
 import json
-import os
 import sys
-from pathlib import Path
 from datetime import datetime, timezone, timedelta
+from pathlib import Path
 
 # ── locate siblings ───────────────────────────────────────────────────────────
 SKILL_DIR = Path(__file__).resolve().parent
@@ -42,31 +41,39 @@ SKILL_ROOT = SKILL_DIR.parent
 SNAPSHOTS_DIR = SKILL_ROOT / "snapshots"
 
 sys.path.insert(0, str(SKILL_DIR))
-from form_builder import (          # noqa: E402
+from form_builder import (  # noqa: E402
+    GwsCommandError,
     batch_update,
     update_form_info_request,
     enable_quiz_request,
     set_publish,
     get_form,
 )
-from json_runner import dispatch     # reuse item dispatcher  # noqa: E402
+from json_runner import dispatch  # reuse item dispatcher  # noqa: E402
 from form_fetcher import build_snapshot  # noqa: E402
+from json_files import write_json_atomic  # noqa: E402
 
 STALE_MINUTES = 30
+INDEX_OPERATIONS = {"add_item", "delete_item", "move_item"}
+
+
+class OperationSpecError(ValueError):
+    """An update operation is missing a required field or target."""
 
 
 # ─── Snapshot helpers ─────────────────────────────────────────────────────────
 
+
 def load_snapshot(form_id: str) -> dict:
-    path = os.path.join(SNAPSHOTS_DIR, f"{form_id}_snapshot.json")
-    if not os.path.exists(path):
+    path = Path(SNAPSHOTS_DIR) / f"{form_id}_snapshot.json"
+    if not path.exists():
         print(
             f"[ERROR] Snapshot not found: {path}\n"
             f"        Run first:  python form_fetcher.py --id {form_id}"
         )
         sys.exit(1)
-    with open(path, encoding="utf-8") as f:
-        snap = json.load(f)
+    with path.open(encoding="utf-8") as snapshot_file:
+        snap = json.load(snapshot_file)
 
     # Stale check
     fetched_at_str = snap.get("fetched_at", "")
@@ -81,17 +88,15 @@ def load_snapshot(form_id: str) -> dict:
                     f"(threshold: {STALE_MINUTES} min).\n"
                     f"          Re-run form_fetcher.py to get the latest state."
                 )
-        except ValueError:
-            pass  # malformed timestamp — skip stale check
+        except (TypeError, ValueError):
+            print("[WARNING] Snapshot has an invalid fetched_at timestamp.")
 
     return snap
 
 
 def save_snapshot(form_id: str, snap: dict) -> None:
-    os.makedirs(SNAPSHOTS_DIR, exist_ok=True)
-    path = os.path.join(SNAPSHOTS_DIR, f"{form_id}_snapshot.json")
-    with open(path, "w", encoding="utf-8") as f:
-        json.dump(snap, f, ensure_ascii=False, indent=2)
+    path = Path(SNAPSHOTS_DIR) / f"{form_id}_snapshot.json"
+    write_json_atomic(path, snap)
 
 
 def refresh_snapshot(form_id: str) -> dict:
@@ -103,19 +108,17 @@ def refresh_snapshot(form_id: str) -> dict:
     return snap
 
 
-def snapshot_item_ids(snap: dict) -> set:
-    return {item["itemId"] for item in snap.get("items", [])}
-
-
 # ─── Op handlers ──────────────────────────────────────────────────────────────
+
 
 def op_update_info(form_id: str, op: dict) -> None:
     title = op.get("title")
     description = op.get("description")
     document_title = op.get("document_title")
     if title is None and description is None and document_title is None:
-        print("[ERROR] 'update_info' requires at least 'title', 'description', or 'document_title'.")
-        sys.exit(1)
+        raise OperationSpecError(
+            "'update_info' requires title, description, or document_title."
+        )
     req = update_form_info_request(
         title=title,
         description=description,
@@ -128,15 +131,17 @@ def op_update_info(form_id: str, op: dict) -> None:
 def op_add_item(form_id: str, op: dict, snap: dict) -> None:
     item_spec = op.get("item")
     if not item_spec:
-        print("[ERROR] 'add_item' requires an 'item' object.")
-        sys.exit(1)
+        raise OperationSpecError("'add_item' requires an 'item' object.")
     at_index = op.get("at_index", snap.get("item_count", 0))
-    req = dispatch(item_spec, at_index)
-    batch_update(form_id, [req])
+    try:
+        req = dispatch(item_spec, at_index)
+    except ValueError as error:
+        raise OperationSpecError(str(error)) from error
+    batch_update(form_id, [req], revision_id=snap.get("revisionId", ""))
     print(f"  [OK] add_item at index {at_index}")
 
 
-def get_item_index(snap: dict, item_id: str) -> int:
+def get_item_index(snap: dict, item_id: str) -> int | None:
     """Find the current index of an item_id in the snapshot."""
     for item in snap.get("items", []):
         if item["itemId"] == item_id:
@@ -147,19 +152,16 @@ def get_item_index(snap: dict, item_id: str) -> int:
 def op_delete_item(form_id: str, op: dict, snap: dict) -> None:
     item_id = op.get("item_id")
     if not item_id:
-        print("[ERROR] 'delete_item' requires 'item_id' (from snapshot).")
-        sys.exit(1)
-    
+        raise OperationSpecError("'delete_item' requires 'item_id' from the snapshot.")
+
     idx = get_item_index(snap, item_id)
     if idx is None:
-        print(
-            f"[WARNING] item_id '{item_id}' not found in snapshot. "
-            "It may have been already deleted or the snapshot is stale."
+        raise OperationSpecError(
+            f"item_id '{item_id}' was not found in the current form."
         )
-        return
 
     req = {"deleteItem": {"location": {"index": idx}}}
-    batch_update(form_id, [req])
+    batch_update(form_id, [req], revision_id=snap.get("revisionId", ""))
     print(f"  [OK] delete_item '{item_id}' at index {idx}")
 
 
@@ -167,24 +169,21 @@ def op_move_item(form_id: str, op: dict, snap: dict) -> None:
     item_id = op.get("item_id")
     to_index = op.get("to_index")
     if not item_id or to_index is None:
-        print("[ERROR] 'move_item' requires 'item_id' and 'to_index'.")
-        sys.exit(1)
-    
+        raise OperationSpecError("'move_item' requires 'item_id' and 'to_index'.")
+
     idx = get_item_index(snap, item_id)
     if idx is None:
-        print(
-            f"[WARNING] item_id '{item_id}' not found in snapshot. "
-            "Snapshot may be stale."
+        raise OperationSpecError(
+            f"item_id '{item_id}' was not found in the current form."
         )
-        return
 
     req = {
         "moveItem": {
             "originalLocation": {"index": idx},
-            "newLocation":      {"index": to_index},
+            "newLocation": {"index": to_index},
         }
     }
-    batch_update(form_id, [req])
+    batch_update(form_id, [req], revision_id=snap.get("revisionId", ""))
     print(f"  [OK] move_item '{item_id}' (index {idx}) -> index {to_index}")
 
 
@@ -196,46 +195,58 @@ def op_enable_quiz(form_id: str) -> None:
 def op_set_publish(form_id: str, op: dict) -> None:
     published = op.get("published")
     if published is None:
-        print("[ERROR] 'set_publish' requires 'published' (true/false).")
-        sys.exit(1)
+        raise OperationSpecError("'set_publish' requires 'published' (true/false).")
     accepting = op.get("accepting", True)
-    try:
-        set_publish(form_id, published=published, accepting=accepting)
-        print(f"  [OK] set_publish published={published} accepting={accepting}")
-    except SystemExit:
-        # set_publish calls sys.exit on non-zero gws exit code
-        print(
-            "[WARNING] set_publish failed — this form may not support "
-            "publish settings (legacy forms). Continuing."
-        )
+    set_publish(form_id, published=published, accepting=accepting)
+    print(f"  [OK] set_publish published={published} accepting={accepting}")
 
 
 # ─── Dispatcher ───────────────────────────────────────────────────────────────
 
 OP_MAP = {
-    "update_info":  lambda form_id, op, snap: op_update_info(form_id, op),
-    "add_item":     op_add_item,
-    "delete_item":  op_delete_item,
-    "move_item":    op_move_item,
-    "enable_quiz":  lambda form_id, op, snap: op_enable_quiz(form_id),
-    "set_publish":  lambda form_id, op, snap: op_set_publish(form_id, op),
+    "update_info": lambda form_id, op, snap: op_update_info(form_id, op),
+    "add_item": op_add_item,
+    "delete_item": op_delete_item,
+    "move_item": op_move_item,
+    "enable_quiz": lambda form_id, op, snap: op_enable_quiz(form_id),
+    "set_publish": lambda form_id, op, snap: op_set_publish(form_id, op),
 }
+
+
+def execute_operation(form_id: str, op: dict, snap: dict) -> tuple[bool, dict]:
+    """Execute one operation and return its success plus current snapshot."""
+    op_name = op.get("op", "").strip()
+    if op_name not in OP_MAP:
+        print(f"  [ERROR] Unknown op '{op_name}'.", file=sys.stderr)
+        return False, snap
+
+    try:
+        if op_name in INDEX_OPERATIONS:
+            snap = refresh_snapshot(form_id)
+        OP_MAP[op_name](form_id, op, snap)
+        if op_name in INDEX_OPERATIONS:
+            snap = refresh_snapshot(form_id)
+    except (GwsCommandError, OperationSpecError) as error:
+        print(f"  [ERROR] {op_name}: {error}", file=sys.stderr)
+        return False, snap
+    return True, snap
 
 
 # ─── Main ─────────────────────────────────────────────────────────────────────
 
-def main():
+
+def main() -> int:
     if len(sys.argv) < 2:
         print("Usage: python form_updater.py <update_spec.json>")
         sys.exit(1)
 
-    spec_path = sys.argv[1]
-    if not os.path.exists(spec_path):
+    spec_path = Path(sys.argv[1])
+    if not spec_path.exists():
         print(f"[ERROR] Spec file not found: {spec_path}")
         sys.exit(1)
 
-    with open(spec_path, encoding="utf-8") as f:
-        spec = json.load(f)
+    with spec_path.open(encoding="utf-8") as spec_file:
+        spec = json.load(spec_file)
 
     form_id = spec.get("form_id", "").strip()
     if not form_id:
@@ -251,19 +262,14 @@ def main():
 
     print(f"\n>> Updating form: {form_id}  ({len(ops)} op(s))")
     completed = 0
-    for i, op in enumerate(ops):
-        op_name = op.get("op", "").strip()
-        if op_name not in OP_MAP:
-            print(f"  [ERROR] Unknown op '{op_name}' at index {i}. Skipping.")
-            continue
-        handler = OP_MAP[op_name]
-        handler(form_id, op, snap)
-        if op_name in {"add_item", "delete_item", "move_item"}:
-            snap = refresh_snapshot(form_id)
-        completed += 1
+    for op in ops:
+        succeeded, snap = execute_operation(form_id, op, snap)
+        completed += int(succeeded)
 
-    print(f"\n[DONE] {completed}/{len(ops)} ops completed.")
+    failed = len(ops) - completed
+    print(f"\n[DONE] {completed} completed, {failed} failed.")
+    return int(failed > 0)
 
 
 if __name__ == "__main__":
-    main()
+    sys.exit(main())

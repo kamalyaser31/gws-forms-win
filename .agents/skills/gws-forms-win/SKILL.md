@@ -8,6 +8,7 @@ description: >
   add questions to an existing form, read responses, manage watches, enable quiz mode,
   add grading/feedback, or automate Google Forms on a Windows machine running gws from npm.
   Includes a ready-made Python builder script.
+disable-model-invocation: true
 ---
 
 # gws-forms-win
@@ -29,6 +30,7 @@ Never write a full Python script per form. Python scripts waste tokens.
 ```json
 {
   "title": "My Exam Title",
+  "desc": "Optional description of the exam or form.",
   "doc_title": "Exam — Subtitle",
   "quiz": true,
   "items": [
@@ -52,7 +54,12 @@ Never write a full Python script per form. Python scripts waste tokens.
 python "<SKILL_ROOT>\scripts\json_runner.py" form.json
 ```
 
--> Prints Edit URL and Responder URL. Done.
+-> Prints Edit URL and Responder URL, and automatically:
+- Copies the **Responder URL** to the Windows clipboard.
+- Logs form details (title, URLs, timestamp) to `<SKILL_ROOT>\history.json`.
+
+History updates are atomic. If `history.json` is malformed or is not a JSON
+array, the runner prints a warning and leaves the existing file untouched.
 
 ---
 
@@ -285,8 +292,11 @@ python "C:\...\scripts\form_updater.py" update.json
 
 > [!NOTE]
 > Each op runs in its **own** `batchUpdate` call (not batched together).
-> After `add_item`, `delete_item`, or `move_item`, the updater automatically
-> refreshes the snapshot so later operations use current indexes.
+> Before and after `add_item`, `delete_item`, or `move_item`, the updater
+> refreshes the snapshot and binds the write to its `revisionId`. Google rejects
+> the request if the form changes between the refresh and the write.
+> Failed operations are reported separately, later operations continue, and the
+> updater exits with code `1` if any operation failed.
 
 ---
 

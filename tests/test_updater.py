@@ -17,19 +17,15 @@ import json
 import os
 import sys
 import pytest
-from unittest.mock import patch, call, MagicMock
+from unittest.mock import patch
 from datetime import datetime, timezone, timedelta
 
-# ── path setup ────────────────────────────────────────────────────────────────
-SKILL_SCRIPTS = os.path.join(os.path.dirname(__file__), "..", "scripts")
-sys.path.insert(0, os.path.abspath(SKILL_SCRIPTS))
-
 import form_updater as updater
-
 
 # ─── Helpers ──────────────────────────────────────────────────────────────────
 
 FORM_ID = "FORM_TEST_001"
+
 
 def _fresh_snapshot(items=None, offset_minutes=0):
     """Return a snapshot dict, fetched_at offset_minutes ago."""
@@ -37,21 +33,36 @@ def _fresh_snapshot(items=None, offset_minutes=0):
     return {
         "form_id": FORM_ID,
         "title": "Test Form",
+        "revisionId": "revision-1",
         "item_count": len(items or []),
         "fetched_at": t.isoformat(),
         "items": items or [],
     }
 
+
 def _snap_with_items():
-    return _fresh_snapshot(items=[
-        {"index": 0, "itemId": "item_A", "title": "Q1",
-         "api_type": "questionItem", "question_type": "textQuestion"},
-        {"index": 1, "itemId": "item_B", "title": "Q2",
-         "api_type": "questionItem", "question_type": "choiceQuestion"},
-    ])
+    return _fresh_snapshot(
+        items=[
+            {
+                "index": 0,
+                "itemId": "item_A",
+                "title": "Q1",
+                "api_type": "questionItem",
+                "question_type": "textQuestion",
+            },
+            {
+                "index": 1,
+                "itemId": "item_B",
+                "title": "Q2",
+                "api_type": "questionItem",
+                "question_type": "choiceQuestion",
+            },
+        ]
+    )
 
 
 # ─── 1. Snapshot enforcement ──────────────────────────────────────────────────
+
 
 class TestSnapshotEnforcement:
 
@@ -70,19 +81,9 @@ class TestSnapshotEnforcement:
         result = updater.load_snapshot(FORM_ID)
         assert result["form_id"] == FORM_ID
 
-    def test_snapshot_ids_extracted(self, tmp_path, monkeypatch):
-        monkeypatch.setattr(updater, "SNAPSHOTS_DIR", str(tmp_path))
-        snap = _snap_with_items()
-        path = os.path.join(tmp_path, f"{FORM_ID}_snapshot.json")
-        with open(path, "w", encoding="utf-8") as f:
-            json.dump(snap, f)
-        loaded = updater.load_snapshot(FORM_ID)
-        ids = updater.snapshot_item_ids(loaded)
-        assert "item_A" in ids
-        assert "item_B" in ids
-
 
 # ─── 2. Stale snapshot warning ────────────────────────────────────────────────
+
 
 class TestStaleSnapshot:
 
@@ -117,6 +118,7 @@ class TestStaleSnapshot:
 
 # ─── 3. Input validation ──────────────────────────────────────────────────────
 
+
 class TestInputValidation:
 
     def test_empty_ops_exits(self, tmp_path, monkeypatch):
@@ -147,43 +149,34 @@ class TestInputValidation:
                 updater.main()
             assert exc.value.code == 1
 
-    def test_update_info_both_none_exits(self):
-        with pytest.raises(SystemExit) as exc:
+    def test_update_info_without_fields_is_rejected(self):
+        with pytest.raises(updater.OperationSpecError):
             updater.op_update_info("FORM_ID", {"op": "update_info"})
-        assert exc.value.code == 1
 
-    def test_delete_item_no_item_id_exits(self):
-        with pytest.raises(SystemExit) as exc:
+    def test_delete_without_item_id_is_rejected(self):
+        with pytest.raises(updater.OperationSpecError):
             updater.op_delete_item("FORM_ID", {"op": "delete_item"}, {})
-        assert exc.value.code == 1
 
-    def test_move_item_missing_to_index_exits(self):
-        with pytest.raises(SystemExit) as exc:
-            updater.op_move_item("FORM_ID",
-                                 {"op": "move_item", "item_id": "X"},
-                                 {})
-        assert exc.value.code == 1
+    def test_move_without_destination_is_rejected(self):
+        with pytest.raises(updater.OperationSpecError):
+            updater.op_move_item("FORM_ID", {"op": "move_item", "item_id": "X"}, {})
 
-    def test_move_item_missing_item_id_exits(self):
-        with pytest.raises(SystemExit) as exc:
-            updater.op_move_item("FORM_ID",
-                                 {"op": "move_item", "to_index": 2},
-                                 {})
-        assert exc.value.code == 1
+    def test_move_without_item_id_is_rejected(self):
+        with pytest.raises(updater.OperationSpecError):
+            updater.op_move_item("FORM_ID", {"op": "move_item", "to_index": 2}, {})
 
-    def test_set_publish_missing_published_exits(self):
-        with pytest.raises(SystemExit) as exc:
+    def test_publish_without_state_is_rejected(self):
+        with pytest.raises(updater.OperationSpecError):
             updater.op_set_publish("FORM_ID", {"op": "set_publish"})
-        assert exc.value.code == 1
 
-    def test_add_item_missing_item_exits(self):
+    def test_add_without_item_is_rejected(self):
         snap = _fresh_snapshot()
-        with pytest.raises(SystemExit) as exc:
+        with pytest.raises(updater.OperationSpecError):
             updater.op_add_item("FORM_ID", {"op": "add_item"}, snap)
-        assert exc.value.code == 1
 
 
 # ─── 4. Op dispatch — correct batchUpdate payloads ───────────────────────────
+
 
 class TestOpDispatch:
 
@@ -203,17 +196,22 @@ class TestOpDispatch:
 
     def test_update_info_document_title(self):
         with patch.object(updater, "batch_update") as mock_bu:
-            updater.op_update_info("FID", {"op": "update_info", "document_title": "Drive Title"})
+            updater.op_update_info(
+                "FID", {"op": "update_info", "document_title": "Drive Title"}
+            )
         req = mock_bu.call_args[0][1][0]
         assert req["updateFormInfo"]["info"]["documentTitle"] == "Drive Title"
         assert "documentTitle" in req["updateFormInfo"]["updateMask"]
 
     def test_delete_item_uses_index_from_snapshot(self):
-        snap = _snap_with_items() # item_A is at index 0
+        snap = _snap_with_items()  # item_A is at index 0
         with patch.object(updater, "batch_update") as mock_bu:
-            updater.op_delete_item("FID", {"op": "delete_item", "item_id": "item_A"}, snap)
+            updater.op_delete_item(
+                "FID", {"op": "delete_item", "item_id": "item_A"}, snap
+            )
         req = mock_bu.call_args[0][1][0]
         assert "deleteItem" in req
+        assert mock_bu.call_args.kwargs["revision_id"] == "revision-1"
         location = req["deleteItem"]["location"]
         # Must use index, found from snapshot
         assert "index" in location
@@ -221,11 +219,11 @@ class TestOpDispatch:
         assert "itemId" not in location
 
     def test_move_item_uses_indices(self):
-        snap = _snap_with_items() # item_B is at index 1
+        snap = _snap_with_items()  # item_B is at index 1
         with patch.object(updater, "batch_update") as mock_bu:
-            updater.op_move_item("FID",
-                                 {"op": "move_item", "item_id": "item_B", "to_index": 0},
-                                 snap)
+            updater.op_move_item(
+                "FID", {"op": "move_item", "item_id": "item_B", "to_index": 0}, snap
+            )
         req = mock_bu.call_args[0][1][0]
         assert "moveItem" in req
         orig = req["moveItem"]["originalLocation"]
@@ -233,6 +231,7 @@ class TestOpDispatch:
         assert orig["index"] == 1
         dest = req["moveItem"]["newLocation"]
         assert dest["index"] == 0
+        assert mock_bu.call_args.kwargs["revision_id"] == "revision-1"
 
     def test_enable_quiz_correct_payload(self):
         with patch.object(updater, "batch_update") as mock_bu:
@@ -243,12 +242,13 @@ class TestOpDispatch:
 
     def test_add_item_appends_to_end_when_no_at_index(self):
         snap = _snap_with_items()  # item_count = 2
-        with patch.object(updater, "batch_update") as mock_bu, \
-             patch("form_updater.dispatch") as mock_dispatch:
+        with patch.object(updater, "batch_update"), patch(
+            "form_updater.dispatch"
+        ) as mock_dispatch:
             mock_dispatch.return_value = {"createItem": {}}
-            updater.op_add_item("FID", {"op": "add_item",
-                                        "item": {"type": "short", "q": "Q?"}},
-                                snap)
+            updater.op_add_item(
+                "FID", {"op": "add_item", "item": {"type": "short", "q": "Q?"}}, snap
+            )
         # at_index should equal item_count (2)
         mock_dispatch.assert_called_once()
         _, called_index = mock_dispatch.call_args[0]
@@ -256,21 +256,23 @@ class TestOpDispatch:
 
     def test_add_item_respects_at_index(self):
         snap = _snap_with_items()
-        with patch.object(updater, "batch_update"), \
-             patch("form_updater.dispatch") as mock_dispatch:
+        with patch.object(updater, "batch_update"), patch(
+            "form_updater.dispatch"
+        ) as mock_dispatch:
             mock_dispatch.return_value = {"createItem": {}}
-            updater.op_add_item("FID", {"op": "add_item",
-                                        "item": {"type": "short", "q": "Q?"},
-                                        "at_index": 1},
-                                snap)
+            updater.op_add_item(
+                "FID",
+                {"op": "add_item", "item": {"type": "short", "q": "Q?"}, "at_index": 1},
+                snap,
+            )
         _, called_index = mock_dispatch.call_args[0]
         assert called_index == 1
 
     def test_set_publish_passes_correct_args(self):
         with patch.object(updater, "set_publish") as mock_sp:
-            updater.op_set_publish("FID",
-                                   {"op": "set_publish", "published": True,
-                                    "accepting": False})
+            updater.op_set_publish(
+                "FID", {"op": "set_publish", "published": True, "accepting": False}
+            )
         mock_sp.assert_called_once_with("FID", published=True, accepting=False)
 
     def test_set_publish_default_accepting_true(self):
@@ -278,27 +280,54 @@ class TestOpDispatch:
             updater.op_set_publish("FID", {"op": "set_publish", "published": False})
         mock_sp.assert_called_once_with("FID", published=False, accepting=True)
 
-    def test_main_refreshes_snapshot_after_add_item(self, tmp_path, monkeypatch):
+    def test_main_refreshes_before_and_after_add_item(self, tmp_path, monkeypatch):
         monkeypatch.setattr(updater, "SNAPSHOTS_DIR", str(tmp_path))
         snap = _fresh_snapshot()
         path = os.path.join(tmp_path, f"{FORM_ID}_snapshot.json")
         with open(path, "w", encoding="utf-8") as f:
             json.dump(snap, f)
 
-        spec = {"form_id": FORM_ID, "ops": [{"op": "add_item", "item": {"type": "short", "q": "Q?"}}]}
+        spec = {
+            "form_id": FORM_ID,
+            "ops": [{"op": "add_item", "item": {"type": "short", "q": "Q?"}}],
+        }
         spec_path = os.path.join(tmp_path, "update.json")
         with open(spec_path, "w", encoding="utf-8") as f:
             json.dump(spec, f)
 
-        with patch.object(updater, "batch_update"), \
-             patch.object(updater, "refresh_snapshot", return_value=snap) as mock_refresh, \
-             patch.object(sys, "argv", ["form_updater.py", spec_path]):
+        with patch.object(updater, "batch_update"), patch.object(
+            updater, "refresh_snapshot", return_value=snap
+        ) as mock_refresh, patch.object(sys, "argv", ["form_updater.py", spec_path]):
             updater.main()
 
-        mock_refresh.assert_called_once_with(FORM_ID)
+        assert mock_refresh.call_count == 2
+
+    def test_delete_resolves_index_from_live_snapshot(self):
+        stale_snapshot = _snap_with_items()
+        live_snapshot = _fresh_snapshot(
+            items=[
+                {"index": 0, "itemId": "item_B"},
+                {"index": 1, "itemId": "item_A"},
+            ]
+        )
+        live_snapshot["revisionId"] = "revision-live"
+        operation = {"op": "delete_item", "item_id": "item_A"}
+
+        with patch.object(
+            updater,
+            "refresh_snapshot",
+            side_effect=[live_snapshot, live_snapshot],
+        ), patch.object(updater, "batch_update") as batch_boundary:
+            succeeded, _ = updater.execute_operation("FID", operation, stale_snapshot)
+
+        delete_request = batch_boundary.call_args.args[1][0]
+        assert succeeded is True
+        assert delete_request["deleteItem"]["location"]["index"] == 1
+        assert batch_boundary.call_args.kwargs["revision_id"] == "revision-live"
 
 
 # ─── 5. Unknown op skipped ───────────────────────────────────────────────────
+
 
 class TestUnknownOp:
 
@@ -315,30 +344,33 @@ class TestUnknownOp:
             json.dump(spec, f)
 
         with patch.object(sys, "argv", ["form_updater.py", spec_path]):
-            updater.main()  # must not raise
+            exit_code = updater.main()
 
         captured = capsys.readouterr()
-        assert "Unknown op" in captured.out
+        assert "Unknown op" in captured.err
+        assert "0 completed, 1 failed" in captured.out
+        assert exit_code == 1
 
 
 # ─── 6. set_publish failure handled ─────────────────────────────────────────
 
+
 class TestSetPublishFailure:
 
-    def test_set_publish_api_failure_continues(self, capsys):
-        """If set_publish raises SystemExit (gws error), updater catches and continues."""
-        with patch.object(updater, "set_publish", side_effect=SystemExit(1)):
-            # Must not propagate the SystemExit
-            updater.op_set_publish("FID", {"op": "set_publish", "published": True})
+    def test_publish_api_failure_is_reported_as_failed(self, capsys):
+        operation = {"op": "set_publish", "published": True}
+        api_error = updater.GwsCommandError(1, "permission denied")
+        with patch.object(updater, "set_publish", side_effect=api_error):
+            succeeded, _ = updater.execute_operation("FID", operation, {})
         captured = capsys.readouterr()
-        assert "WARNING" in captured.out
+        assert succeeded is False
+        assert "permission denied" in captured.err
 
-    def test_delete_item_unknown_id_warns_not_exits(self, capsys):
-        """Deleting an item_id not in snapshot should warn, not crash."""
+    def test_delete_unknown_item_is_reported_as_failed(self, capsys):
         snap = _snap_with_items()
-        with patch.object(updater, "batch_update"):
-            updater.op_delete_item("FID",
-                                   {"op": "delete_item", "item_id": "GHOST_ID"},
-                                   snap)
+        operation = {"op": "delete_item", "item_id": "GHOST_ID"}
+        with patch.object(updater, "refresh_snapshot", return_value=snap):
+            succeeded, _ = updater.execute_operation("FID", operation, snap)
         captured = capsys.readouterr()
-        assert "WARNING" in captured.out
+        assert succeeded is False
+        assert "not found" in captured.err

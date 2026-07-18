@@ -8,10 +8,10 @@ escaping issues with JSON containing special chars (&, ", ', —).
 Full API reference: see REFERENCE.md in this skill folder.
 """
 
-import subprocess
 import json
-import sys
 import os
+import subprocess
+import sys
 from pathlib import Path
 
 # ─── Paths ───────────────────────────────────────────────────────────────────
@@ -35,10 +35,33 @@ GWS_JS = os.environ.get(
 )
 
 
+class GwsCommandError(RuntimeError):
+    """A gws process completed with a non-zero exit code."""
+
+    def __init__(self, returncode: int, stderr: str):
+        message = stderr.strip() or f"gws exited with code {returncode}"
+        super().__init__(message)
+        self.returncode = returncode
+
+
 # ─── Core runner ─────────────────────────────────────────────────────────────
 
-def run_gws(gws_args: list, json_body: dict = None, params: dict = None,
-            verbose: bool = True) -> dict:
+
+def _gws_command(gws_args: list, json_body: dict, params: dict) -> list:
+    command = [NODE_EXE, GWS_JS] + gws_args
+    if params:
+        command += ["--params", json.dumps(params, ensure_ascii=False)]
+    if json_body:
+        command += ["--json", json.dumps(json_body, ensure_ascii=False)]
+    return command
+
+
+def run_gws(
+    gws_args: list,
+    json_body: dict = None,
+    params: dict = None,
+    verbose: bool = True,
+) -> dict:
     """
     Call gws via node.exe directly (bypasses ps1 wrapper and all shell escaping).
 
@@ -52,35 +75,31 @@ def run_gws(gws_args: list, json_body: dict = None, params: dict = None,
         parsed JSON response dict (empty dict if no output)
 
     Raises:
-        SystemExit on non-zero exit code
+        GwsCommandError: the gws process returned a non-zero exit code.
     """
-    cmd = [NODE_EXE, GWS_JS] + gws_args
-    if params:
-        cmd += ["--params", json.dumps(params, ensure_ascii=False)]
-    if json_body:
-        cmd += ["--json", json.dumps(json_body, ensure_ascii=False)]
-
     if verbose:
         print(f"  >> gws {' '.join(gws_args)}")
 
-    result = subprocess.run(
-        cmd,
+    completed_process = subprocess.run(
+        _gws_command(gws_args, json_body, params),
         capture_output=True,
         text=True,
         encoding="utf-8",
         env={**os.environ, "PYTHONIOENCODING": "utf-8"},
     )
 
-    if result.returncode != 0:
-        print(f"[ERROR] gws exit code {result.returncode}")
-        print(result.stderr)
-        sys.exit(result.returncode)
+    if completed_process.returncode != 0:
+        raise GwsCommandError(
+            completed_process.returncode,
+            completed_process.stderr,
+        )
 
-    text = result.stdout.strip()
-    return json.loads(text) if text else {}
+    response_text = completed_process.stdout.strip()
+    return json.loads(response_text) if response_text else {}
 
 
 # ─── High-level helpers ───────────────────────────────────────────────────────
+
 
 def create_form(title: str, document_title: str = "") -> tuple:
     """
@@ -89,16 +108,26 @@ def create_form(title: str, document_title: str = "") -> tuple:
           All items must be added via batchUpdate afterward.
     """
     body = {"info": {"title": title, "documentTitle": document_title or title}}
-    data = run_gws(["forms", "forms", "create"], json_body=body)
-    return data["formId"], data.get("responderUri", ""), data.get("revisionId", "")
+    created_form = run_gws(["forms", "forms", "create"], json_body=body)
+    return (
+        created_form["formId"],
+        created_form.get("responderUri", ""),
+        created_form.get("revisionId", ""),
+    )
 
 
-def batch_update(form_id: str, requests: list,
-                 include_form: bool = False) -> dict:
+def batch_update(
+    form_id: str,
+    requests: list,
+    include_form: bool = False,
+    revision_id: str = "",
+) -> dict:
     """Push a list of request dicts to an existing form."""
     body = {"requests": requests}
     if include_form:
         body["includeFormInResponse"] = True
+    if revision_id:
+        body["writeControl"] = {"requiredRevisionId": revision_id}
     return run_gws(
         ["forms", "forms", "batchUpdate"],
         json_body=body,
@@ -106,8 +135,9 @@ def batch_update(form_id: str, requests: list,
     )
 
 
-def build_form(title: str, items: list, document_title: str = "",
-               quiz_mode: bool = False) -> dict:
+def build_form(
+    title: str, items: list, document_title: str = "", quiz_mode: bool = False
+) -> dict:
     """
     One-shot: create form + optionally enable quiz + add all items.
     Returns {"formId", "responderUri", "editUrl"}.
@@ -120,10 +150,11 @@ def build_form(title: str, items: list, document_title: str = "",
         all_requests.append(enable_quiz_request())
 
     all_requests.extend(items)
-    batch_update(form_id, all_requests)
+    if all_requests:
+        batch_update(form_id, all_requests)
 
     edit_url = f"https://docs.google.com/forms/d/{form_id}/edit"
-    print(f"\n[OK] Form ready")
+    print("\n[OK] Form ready")
     print(f"     Responder : {responder_url}")
     print(f"     Edit      : {edit_url}")
     return {"formId": form_id, "responderUri": responder_url, "editUrl": edit_url}
@@ -134,8 +165,7 @@ def get_form(form_id: str) -> dict:
     return run_gws(["forms", "forms", "get"], params={"formId": form_id})
 
 
-def list_responses(form_id: str, page_size: int = 100,
-                   after: str = "") -> list:
+def list_responses(form_id: str, page_size: int = 100, after: str = "") -> list:
     """
     Fetch all responses. after = RFC3339 timestamp filter.
     Returns flat list of FormResponse dicts.
@@ -150,10 +180,10 @@ def list_responses(form_id: str, page_size: int = 100,
         if page_token:
             p["pageToken"] = page_token
 
-        data = run_gws(["forms", "forms", "responses", "list"], params=p)
-        all_responses.extend(data.get("responses", []))
+        response_page = run_gws(["forms", "forms", "responses", "list"], params=p)
+        all_responses.extend(response_page.get("responses", []))
 
-        page_token = data.get("nextPageToken")
+        page_token = response_page.get("nextPageToken")
         if not page_token:
             break
 
@@ -165,33 +195,37 @@ def enable_quiz(form_id: str) -> dict:
     return batch_update(form_id, [enable_quiz_request()])
 
 
-def set_publish(form_id: str, published: bool = True,
-                accepting: bool = True) -> dict:
+def set_publish(form_id: str, published: bool = True, accepting: bool = True) -> dict:
     """Publish or unpublish a form (not supported on legacy forms)."""
     return run_gws(
         ["forms", "forms", "setPublishSettings"],
-        json_body={"publishSettings": {
-            "isPublished": published,
-            "isAcceptingResponses": accepting
-        }, "updateMask": "*"},
+        json_body={
+            "publishSettings": {
+                "isPublished": published,
+                "isAcceptingResponses": accepting,
+            },
+            "updateMask": "*",
+        },
         params={"formId": form_id},
     )
 
 
 # ─── Settings request builders ───────────────────────────────────────────────
 
+
 def enable_quiz_request() -> dict:
     """batchUpdate request to enable quiz mode."""
     return {
         "updateSettings": {
             "settings": {"quizSettings": {"isQuiz": True}},
-            "updateMask": "quizSettings.isQuiz"
+            "updateMask": "quizSettings.isQuiz",
         }
     }
 
 
-def update_form_info_request(title: str = None, description: str = None,
-                              document_title: str = None) -> dict:
+def update_form_info_request(
+    title: str = None, description: str = None, document_title: str = None
+) -> dict:
     """batchUpdate request to update form title/description."""
     info = {}
     mask_parts = []
@@ -209,6 +243,7 @@ def update_form_info_request(title: str = None, description: str = None,
 
 # ─── Item builders ───────────────────────────────────────────────────────────
 
+
 def make_page_break(title: str, index: int, description: str = "") -> dict:
     """Section header / page break."""
     item = {"title": title, "pageBreakItem": {}}
@@ -225,8 +260,9 @@ def make_text_item(title: str, index: int, description: str = "") -> dict:
     return {"createItem": {"item": item, "location": {"index": index}}}
 
 
-def make_short_answer(question_text: str, index: int,
-                      paragraph: bool = True, required: bool = True) -> dict:
+def make_short_answer(
+    question_text: str, index: int, paragraph: bool = True, required: bool = True
+) -> dict:
     """
     Text question.
     paragraph=True  -> multi-line paragraph
@@ -248,9 +284,14 @@ def make_short_answer(question_text: str, index: int,
     }
 
 
-def make_mcq(question_text: str, options: list, index: int,
-             question_type: str = "RADIO", shuffle: bool = False,
-             required: bool = True) -> dict:
+def make_mcq(
+    question_text: str,
+    options: list,
+    index: int,
+    question_type: str = "RADIO",
+    shuffle: bool = False,
+    required: bool = True,
+) -> dict:
     """
     Choice question.
     question_type: "RADIO" | "CHECKBOX" | "DROP_DOWN"
@@ -276,11 +317,17 @@ def make_mcq(question_text: str, options: list, index: int,
     }
 
 
-def make_mcq_graded(question_text: str, options: list, index: int,
-                    correct: str, points: int = 1,
-                    feedback_right: str = "", feedback_wrong: str = "",
-                    question_type: str = "RADIO",
-                    required: bool = True) -> dict:
+def make_mcq_graded(
+    question_text: str,
+    options: list,
+    index: int,
+    correct: str,
+    points: int = 1,
+    feedback_right: str = "",
+    feedback_wrong: str = "",
+    question_type: str = "RADIO",
+    required: bool = True,
+) -> dict:
     """
     Choice question with automatic grading (quiz mode must be enabled).
     correct: the exact string value of the correct option.
@@ -315,10 +362,15 @@ def make_mcq_graded(question_text: str, options: list, index: int,
     }
 
 
-def make_scale(question_text: str, index: int,
-               low: int = 1, high: int = 5,
-               low_label: str = "", high_label: str = "",
-               required: bool = False) -> dict:
+def make_scale(
+    question_text: str,
+    index: int,
+    low: int = 1,
+    high: int = 5,
+    low_label: str = "",
+    high_label: str = "",
+    required: bool = False,
+) -> dict:
     """Linear scale question (1–10 range)."""
     q = {"low": low, "high": high}
     if low_label:
@@ -338,9 +390,13 @@ def make_scale(question_text: str, index: int,
     }
 
 
-def make_date(question_text: str, index: int,
-              include_time: bool = False, include_year: bool = True,
-              required: bool = False) -> dict:
+def make_date(
+    question_text: str,
+    index: int,
+    include_time: bool = False,
+    include_year: bool = True,
+    required: bool = False,
+) -> dict:
     """Date (and optionally time) question."""
     return {
         "createItem": {
@@ -361,8 +417,9 @@ def make_date(question_text: str, index: int,
     }
 
 
-def make_time(question_text: str, index: int,
-              duration: bool = False, required: bool = False) -> dict:
+def make_time(
+    question_text: str, index: int, duration: bool = False, required: bool = False
+) -> dict:
     """
     Time question.
     duration=False -> time of day (HH:MM)
@@ -384,9 +441,13 @@ def make_time(question_text: str, index: int,
     }
 
 
-def make_rating(question_text: str, index: int,
-                scale: int = 5, icon: str = "STAR",
-                required: bool = False) -> dict:
+def make_rating(
+    question_text: str,
+    index: int,
+    scale: int = 5,
+    icon: str = "STAR",
+    required: bool = False,
+) -> dict:
     """
     Rating question.
     icon: "STAR" | "HEART" | "THUMB_UP"
@@ -410,9 +471,15 @@ def make_rating(question_text: str, index: int,
     }
 
 
-def make_grid(title: str, rows: list, col_options: list, index: int,
-              col_type: str = "RADIO", shuffle_rows: bool = False,
-              required: bool = False) -> dict:
+def make_grid(
+    title: str,
+    rows: list,
+    col_options: list,
+    index: int,
+    col_type: str = "RADIO",
+    shuffle_rows: bool = False,
+    required: bool = False,
+) -> dict:
     """
     Grid question (questionGroupItem).
     rows: list of row label strings
@@ -442,9 +509,14 @@ def make_grid(title: str, rows: list, col_options: list, index: int,
     }
 
 
-def make_video(title: str, youtube_uri: str, index: int,
-               caption: str = "", alignment: str = "CENTER",
-               width: int = 640) -> dict:
+def make_video(
+    title: str,
+    youtube_uri: str,
+    index: int,
+    caption: str = "",
+    alignment: str = "CENTER",
+    width: int = 640,
+) -> dict:
     """YouTube video item."""
     item = {
         "title": title,
@@ -460,9 +532,14 @@ def make_video(title: str, youtube_uri: str, index: int,
     return {"createItem": {"item": item, "location": {"index": index}}}
 
 
-def make_image(title: str, source_uri: str, index: int,
-               alt_text: str = "", alignment: str = "CENTER",
-               width: int = 640) -> dict:
+def make_image(
+    title: str,
+    source_uri: str,
+    index: int,
+    alt_text: str = "",
+    alignment: str = "CENTER",
+    width: int = 640,
+) -> dict:
     """Image item (sourceUri must be a public URL)."""
     item = {
         "title": title,
@@ -488,7 +565,16 @@ if __name__ == "__main__":
         make_mcq("Favourite colour?", ["A. Red", "B. Blue", "C. Green"], 4),
         make_scale("Rate this form:", 5, 1, 5, "Poor", "Excellent"),
         make_date("Your date of birth:", 6, include_year=True),
-        make_grid("Rate each subject:", ["Math", "Science", "Arabic"], ["Poor", "Good", "Excellent"], 7),
+        make_grid(
+            "Rate each subject:",
+            ["Math", "Science", "Arabic"],
+            ["Poor", "Good", "Excellent"],
+            7,
+        ),
     ]
-    result = build_form("Test Form — All Types", items, quiz_mode=False)
-    print(result)
+    try:
+        created_form = build_form("Test Form — All Types", items, quiz_mode=False)
+    except GwsCommandError as error:
+        print(f"[ERROR] {error}", file=sys.stderr)
+        sys.exit(error.returncode)
+    print(created_form)

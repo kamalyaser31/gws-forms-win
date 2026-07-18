@@ -16,66 +16,46 @@ Rules:
 """
 
 import argparse
-import json
-import os
-import re
 import sys
-from pathlib import Path
 from datetime import datetime, timezone
+from pathlib import Path
 
 # ── locate siblings ───────────────────────────────────────────────────────────
 SKILL_DIR = Path(__file__).resolve().parent  # scripts/
-SKILL_ROOT = SKILL_DIR.parent                # skill root
+SKILL_ROOT = SKILL_DIR.parent  # skill root
 SNAPSHOTS_DIR = SKILL_ROOT / "snapshots"
 
 sys.path.insert(0, str(SKILL_DIR))
 from form_builder import get_form  # noqa: E402
-
-
-# ─── URL parsing ──────────────────────────────────────────────────────────────
-
-# Matches: /forms/d/<form_id>/edit  or  /forms/d/<form_id>/viewform (no /e/)
-_EDIT_RE = re.compile(r"/forms/d/([^/]+)/(?:edit|viewform)")
-# Matches the encoded responder URL /forms/d/e/LONG_ID/viewform
-_ENCODED_RE = re.compile(r"/forms/d/e/([^/]+)/viewform")
-
-
-def extract_form_id(url: str) -> str:
-    """
-    Extract form_id from an Edit URL or a plain viewform URL.
-    Raises SystemExit for encoded /e/ responder URLs.
-    """
-    if _ENCODED_RE.search(url):
-        print(
-            "[ERROR] Encoded viewform URL (/e/...) does not expose the form_id.\n"
-            "        Use the Edit URL (opens in Google Forms editor) or --id directly."
-        )
-        sys.exit(1)
-
-    m = _EDIT_RE.search(url)
-    if m:
-        return m.group(1)
-
-    print(
-        "[ERROR] Could not extract form_id from URL.\n"
-        "        Provide an Edit URL: https://docs.google.com/forms/d/<ID>/edit\n"
-        "        or use --id <FORM_ID> directly."
-    )
-    sys.exit(1)
-
+from form_builder import GwsCommandError  # noqa: E402
+from form_url import extract_form_id  # noqa: E402
+from json_files import write_json_atomic  # noqa: E402
 
 # ─── Snapshot building ────────────────────────────────────────────────────────
 
+
 def _item_type(raw_item: dict) -> tuple:
     """Return (api_type, question_type) from a raw API item dict."""
-    for api_type in ("questionItem", "questionGroupItem", "pageBreakItem",
-                     "textItem", "imageItem", "videoItem"):
+    for api_type in (
+        "questionItem",
+        "questionGroupItem",
+        "pageBreakItem",
+        "textItem",
+        "imageItem",
+        "videoItem",
+    ):
         if api_type in raw_item:
             if api_type == "questionItem":
                 q = raw_item["questionItem"].get("question", {})
-                for qt in ("textQuestion", "choiceQuestion", "scaleQuestion",
-                            "dateQuestion", "timeQuestion", "ratingQuestion",
-                            "fileUploadQuestion"):
+                for qt in (
+                    "textQuestion",
+                    "choiceQuestion",
+                    "scaleQuestion",
+                    "dateQuestion",
+                    "timeQuestion",
+                    "ratingQuestion",
+                    "fileUploadQuestion",
+                ):
                     if qt in q:
                         return api_type, qt
                 return api_type, "unknown"
@@ -117,13 +97,14 @@ def build_snapshot(form_id: str, raw: dict) -> dict:
 
 # ─── Main ─────────────────────────────────────────────────────────────────────
 
+
 def main():
     parser = argparse.ArgumentParser(
         description="Fetch a Google Form and save a local snapshot JSON."
     )
     group = parser.add_mutually_exclusive_group(required=True)
-    group.add_argument("--id",  dest="form_id", help="Form ID")
-    group.add_argument("--url", dest="url",     help="Edit URL or plain viewform URL")
+    group.add_argument("--id", dest="form_id", help="Form ID")
+    group.add_argument("--url", dest="url", help="Edit URL or plain viewform URL")
     args = parser.parse_args()
 
     form_id = args.form_id if args.form_id else extract_form_id(args.url)
@@ -133,16 +114,18 @@ def main():
 
     snapshot = build_snapshot(form_id, raw)
 
-    os.makedirs(SNAPSHOTS_DIR, exist_ok=True)
     out_path = SNAPSHOTS_DIR / f"{form_id}_snapshot.json"
-    with open(out_path, "w", encoding="utf-8") as f:
-        json.dump(snapshot, f, ensure_ascii=False, indent=2)
+    write_json_atomic(out_path, snapshot)
 
-    print(f"\n[OK] Snapshot saved")
+    print("\n[OK] Snapshot saved")
     print(f"     Items    : {snapshot['item_count']}")
     print(f"     Title    : {snapshot['title']}")
     print(f"     Path     : {out_path}")
 
 
 if __name__ == "__main__":
-    main()
+    try:
+        main()
+    except GwsCommandError as error:
+        print(f"[ERROR] {error}", file=sys.stderr)
+        sys.exit(error.returncode)

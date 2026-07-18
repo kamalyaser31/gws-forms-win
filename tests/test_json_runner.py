@@ -13,19 +13,16 @@ Priority order (most critical first):
   6. Quiz mode — enable_quiz_request included when quiz=True
 """
 
+import json
 import os
 import sys
 import pytest
-from unittest.mock import patch, MagicMock
-
-# ── path setup ────────────────────────────────────────────────────────────────
-SKILL_SCRIPTS = os.path.join(os.path.dirname(__file__), "..", "scripts")
-sys.path.insert(0, os.path.abspath(SKILL_SCRIPTS))
+from unittest.mock import patch
 
 import json_runner as runner
 
-
 # ─── 1. dispatch() — all item types ─────────────────────────────────────────
+
 
 class TestDispatch:
 
@@ -63,43 +60,62 @@ class TestDispatch:
         assert q["textQuestion"]["paragraph"] is False
 
     def test_mcq_ungraded(self):
-        req = self._req({
-            "type": "mcq", "q": "Choose:", "options": ["A", "B", "C"]
-        })
+        req = self._req({"type": "mcq", "q": "Choose:", "options": ["A", "B", "C"]})
         q = req["createItem"]["item"]["questionItem"]["question"]
         assert "choiceQuestion" in q
         assert "grading" not in q
 
     def test_mcq_graded_correct_answer(self):
-        req = self._req({
-            "type": "mcq", "q": "Choose:", "options": ["A", "B"],
-            "correct": "B", "wrong": "It is B."
-        })
+        req = self._req(
+            {
+                "type": "mcq",
+                "q": "Choose:",
+                "options": ["A", "B"],
+                "correct": "B",
+                "wrong": "It is B.",
+            }
+        )
         q = req["createItem"]["item"]["questionItem"]["question"]
         assert "grading" in q
         assert q["grading"]["correctAnswers"]["answers"][0]["value"] == "B"
 
     def test_mcq_graded_feedback_right(self):
-        req = self._req({
-            "type": "mcq", "q": "Q", "options": ["A"],
-            "correct": "A", "right": "Well done!"
-        })
+        req = self._req(
+            {
+                "type": "mcq",
+                "q": "Q",
+                "options": ["A"],
+                "correct": "A",
+                "right": "Well done!",
+            }
+        )
         q = req["createItem"]["item"]["questionItem"]["question"]
         assert q["grading"]["whenRight"]["text"] == "Well done!"
 
     def test_mcq_graded_wrong_feedback(self):
-        req = self._req({
-            "type": "mcq", "q": "Q", "options": ["A", "B"],
-            "correct": "A", "wrong": "Nope."
-        })
+        req = self._req(
+            {
+                "type": "mcq",
+                "q": "Q",
+                "options": ["A", "B"],
+                "correct": "A",
+                "wrong": "Nope.",
+            }
+        )
         q = req["createItem"]["item"]["questionItem"]["question"]
         assert q["grading"]["whenWrong"]["text"] == "Nope."
 
     def test_scale(self):
-        req = self._req({
-            "type": "scale", "q": "Rate:", "low": 1, "high": 5,
-            "low_label": "Bad", "high_label": "Good"
-        })
+        req = self._req(
+            {
+                "type": "scale",
+                "q": "Rate:",
+                "low": 1,
+                "high": 5,
+                "low_label": "Bad",
+                "high_label": "Good",
+            }
+        )
         q = req["createItem"]["item"]["questionItem"]["question"]
         assert "scaleQuestion" in q
         assert q["scaleQuestion"]["low"] == 1
@@ -123,29 +139,35 @@ class TestDispatch:
         assert q["ratingQuestion"]["ratingScaleLevel"] == 5
 
     def test_grid(self):
-        req = self._req({
-            "type": "grid",
-            "title": "Grid Q",
-            "rows": ["Row1", "Row2"],
-            "cols": ["Col1", "Col2"],
-        })
+        req = self._req(
+            {
+                "type": "grid",
+                "title": "Grid Q",
+                "rows": ["Row1", "Row2"],
+                "cols": ["Col1", "Col2"],
+            }
+        )
         self._assert_create_item(req)
         assert "questionGroupItem" in req["createItem"]["item"]
 
     def test_video(self):
-        req = self._req({
-            "type": "video",
-            "title": "Watch this",
-            "uri": "https://youtu.be/abc",
-        })
+        req = self._req(
+            {
+                "type": "video",
+                "title": "Watch this",
+                "uri": "https://youtu.be/abc",
+            }
+        )
         assert "videoItem" in req["createItem"]["item"]
 
     def test_image(self):
-        req = self._req({
-            "type": "image",
-            "title": "Look at this",
-            "uri": "https://example.com/img.png",
-        })
+        req = self._req(
+            {
+                "type": "image",
+                "title": "Look at this",
+                "uri": "https://example.com/img.png",
+            }
+        )
         assert "imageItem" in req["createItem"]["item"]
 
     def test_unknown_type_raises(self):
@@ -154,6 +176,7 @@ class TestDispatch:
 
 
 # ─── 2. Location index ───────────────────────────────────────────────────────
+
 
 class TestLocationIndex:
 
@@ -166,13 +189,12 @@ class TestLocationIndex:
         assert req["createItem"]["location"]["index"] == 7
 
     def test_index_propagated_for_mcq(self):
-        req = runner.dispatch({
-            "type": "mcq", "q": "Q", "options": ["A"]
-        }, 4)
+        req = runner.dispatch({"type": "mcq", "q": "Q", "options": ["A"]}, 4)
         assert req["createItem"]["location"]["index"] == 4
 
 
 # ─── 3. Required field defaults ──────────────────────────────────────────────
+
 
 class TestRequiredDefaults:
 
@@ -194,22 +216,8 @@ class TestRequiredDefaults:
 
 # ─── 4. build_form integration ───────────────────────────────────────────────
 
+
 class TestBuildForm:
-
-    def test_build_form_creates_form_then_batch_updates(self):
-        items = [runner.dispatch({"type": "short", "q": "Q?"}, 0)]
-
-        with patch("json_runner.build_form") as mock_bf:
-            mock_bf.return_value = {
-                "formId": "F123",
-                "responderUri": "https://...",
-                "editUrl": "https://.../edit",
-            }
-            from json_runner import build_form
-            result = build_form("Title", items, quiz_mode=False)
-
-        mock_bf.assert_called_once_with("Title", items, quiz_mode=False)
-
     def test_main_calls_build_form_with_all_items(self, tmp_path):
         spec = {
             "title": "Test Form",
@@ -222,9 +230,12 @@ class TestBuildForm:
         spec_path = os.path.join(tmp_path, "form.json")
         with open(spec_path, "w", encoding="utf-8") as f:
             import json
+
             json.dump(spec, f)
 
-        with patch("json_runner.build_form") as mock_bf:
+        with patch("json_runner.build_form") as mock_bf, patch(
+            "json_runner.record_local_outputs"
+        ):
             mock_bf.return_value = {
                 "formId": "X",
                 "responderUri": "",
@@ -238,17 +249,55 @@ class TestBuildForm:
         assert len(called_items) == 2
 
     def test_quiz_mode_flag_passed(self, tmp_path):
-        spec = {"title": "Q", "quiz": True,
-                "items": [{"type": "short", "q": "Q?"}]}
+        spec = {"title": "Q", "quiz": True, "items": [{"type": "short", "q": "Q?"}]}
         spec_path = os.path.join(tmp_path, "form.json")
         with open(spec_path, "w") as f:
             import json
+
             json.dump(spec, f)
 
-        with patch("json_runner.build_form") as mock_bf:
+        with patch("json_runner.build_form") as mock_bf, patch(
+            "json_runner.record_local_outputs"
+        ):
             mock_bf.return_value = {"formId": "X", "responderUri": "", "editUrl": ""}
             with patch.object(sys, "argv", ["json_runner.py", spec_path]):
                 runner.main()
 
         _, kwargs = mock_bf.call_args
         assert kwargs.get("quiz_mode") is True
+
+
+class TestDescriptionAndHistory:
+    def test_description_is_sent_before_items(self):
+        requests = runner.build_requests(
+            {
+                "description": "Form details",
+                "items": [{"type": "short", "q": "Question?"}],
+            }
+        )
+        assert requests[0]["updateFormInfo"]["info"]["description"] == "Form details"
+        assert requests[1]["createItem"]["location"]["index"] == 0
+
+    def test_existing_history_is_preserved_when_entry_is_appended(self, tmp_path):
+        history_path = tmp_path / "history.json"
+        history_path.write_text('[{"formId": "old"}]', encoding="utf-8")
+
+        runner.append_history(history_path, {"formId": "new"})
+
+        saved_history = json.loads(history_path.read_text(encoding="utf-8"))
+        assert [entry["formId"] for entry in saved_history] == ["old", "new"]
+
+    @pytest.mark.parametrize("invalid_history", ["{", '{"formId": "old"}'])
+    def test_invalid_history_is_never_overwritten(self, tmp_path, invalid_history):
+        history_path = tmp_path / "history.json"
+        history_path.write_text(invalid_history, encoding="utf-8")
+
+        with pytest.raises((json.JSONDecodeError, ValueError)):
+            runner.append_history(history_path, {"formId": "new"})
+
+        assert history_path.read_text(encoding="utf-8") == invalid_history
+
+    def test_clipboard_command_never_uses_a_shell(self):
+        with patch("json_runner.subprocess.run") as clipboard_process:
+            runner.copy_responder_url("https://example.test/form")
+        assert clipboard_process.call_args.kwargs["shell"] is False
