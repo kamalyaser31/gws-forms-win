@@ -24,36 +24,16 @@ from pathlib import Path
 
 # ── locate siblings ───────────────────────────────────────────────────────────
 SKILL_DIR = Path(__file__).resolve().parent
-SKILL_ROOT = SKILL_DIR.parent
 sys.path.insert(0, str(SKILL_DIR))
-from form_builder import GwsCommandError, run_gws  # noqa: E402
-from form_url import extract_form_id  # noqa: E402
-from json_files import write_json_atomic  # noqa: E402
+from form_builder import (  # noqa: E402
+    GwsCommandError,
+    extract_form_id,
+    list_responses,
+    write_json_atomic,
+)
 
-# ─── Response fetching with full pagination ───────────────────────────────────
-
-
-def fetch_all_responses(form_id: str, after: str = "") -> list:
-    """Fetch every response page until nextPageToken is exhausted."""
-    all_responses = []
-    page_token = None
-
-    while True:
-        params = {"formId": form_id, "pageSize": 100}
-        if after:
-            params["filter"] = f'timestamp > "{after}"'
-        if page_token:
-            params["pageToken"] = page_token
-
-        response_page = run_gws(["forms", "forms", "responses", "list"], params=params)
-        page = response_page.get("responses", [])
-        all_responses.extend(page)
-
-        page_token = response_page.get("nextPageToken")
-        if not page_token:
-            break
-
-    return all_responses
+# ─── Response fetching ────────────────────────────────────────────────────────
+fetch_all_responses = list_responses
 
 
 # ─── Response normalisation ───────────────────────────────────────────────────
@@ -109,15 +89,22 @@ def main():
         ),
     )
     parser.add_argument(
+        "-o",
         "--output",
         default="",
         metavar="PATH",
-        help="Output file path (default: <form_id>_responses.json in cwd)",
+        help="Output file path (default: <form_id>_responses.json in current directory)",
     )
     args = parser.parse_args()
 
-    form_id = args.form_id if args.form_id else extract_form_id(args.url)
-    out_path = args.output or f"{form_id}_responses.json"
+    try:
+        form_id = args.form_id if args.form_id else extract_form_id(args.url)
+    except ValueError as error:
+        print(f"[ERROR] {error}", file=sys.stderr)
+        sys.exit(1)
+    out_path = (
+        Path(args.output) if args.output else Path.cwd() / f"{form_id}_responses.json"
+    )
 
     print(f"  >> Fetching responses for form: {form_id}")
     if args.after:

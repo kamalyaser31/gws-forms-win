@@ -2,6 +2,4 @@ __pycache__/
 *.py[cod]
 .pytest_cache/
 .tmp/
-snapshots/
-history.json
-task.md
+output/

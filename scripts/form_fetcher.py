@@ -7,7 +7,7 @@ Usage:
     python form_fetcher.py --url "https://docs.google.com/forms/d/.../edit"
 
 Output:
-    SKILL_DIR/snapshots/<form_id>_snapshot.json
+    <form_id>_snapshot.json (or --output path)
 
 Rules:
     - Viewform URLs containing /e/ are rejected (they don't expose form_id).
@@ -22,14 +22,13 @@ from pathlib import Path
 
 # ── locate siblings ───────────────────────────────────────────────────────────
 SKILL_DIR = Path(__file__).resolve().parent  # scripts/
-SKILL_ROOT = SKILL_DIR.parent  # skill root
-SNAPSHOTS_DIR = SKILL_ROOT / "snapshots"
-
 sys.path.insert(0, str(SKILL_DIR))
-from form_builder import get_form  # noqa: E402
-from form_builder import GwsCommandError  # noqa: E402
-from form_url import extract_form_id  # noqa: E402
-from json_files import write_json_atomic  # noqa: E402
+from form_builder import (  # noqa: E402
+    GwsCommandError,
+    extract_form_id,
+    get_form,
+    write_json_atomic,
+)
 
 # ─── Snapshot building ────────────────────────────────────────────────────────
 
@@ -105,16 +104,29 @@ def main():
     group = parser.add_mutually_exclusive_group(required=True)
     group.add_argument("--id", dest="form_id", help="Form ID")
     group.add_argument("--url", dest="url", help="Edit URL or plain viewform URL")
+    parser.add_argument(
+        "-o",
+        "--output",
+        default="",
+        metavar="PATH",
+        help="Output snapshot file path (default: <form_id>_snapshot.json in current directory)",
+    )
     args = parser.parse_args()
 
-    form_id = args.form_id if args.form_id else extract_form_id(args.url)
+    try:
+        form_id = args.form_id if args.form_id else extract_form_id(args.url)
+    except ValueError as error:
+        print(f"[ERROR] {error}", file=sys.stderr)
+        sys.exit(1)
 
     print(f"  >> Fetching form: {form_id}")
     raw = get_form(form_id)
 
     snapshot = build_snapshot(form_id, raw)
 
-    out_path = SNAPSHOTS_DIR / f"{form_id}_snapshot.json"
+    out_path = (
+        Path(args.output) if args.output else Path.cwd() / f"{form_id}_snapshot.json"
+    )
     write_json_atomic(out_path, snapshot)
 
     print("\n[OK] Snapshot saved")

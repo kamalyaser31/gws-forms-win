@@ -1,0 +1,43 @@
+{
+  "form_id": "1HSBYnNQGL431xmIY9uT6BBLGaW0BoHfW3oUvZ3SEtDE",
+  "ops": [
+    {
+      "op": "update_info",
+      "title": "الاختبار الشامل للعلوم والتقنية — النسخة المعتمدة والمحدثة",
+      "description": "استمارة معتمدة خضعت لدورة تحديثات هيكلية شاملة: إعادة ترتيب الحقول، حذف العناصر التمهيدية، وإضافة أسئلة تخصصية جديدة."
+    },
+    {
+      "op": "delete_item",
+      "item_id": "69d44552"
+    },
+    {
+      "op": "move_item",
+      "item_id": "3cf8b882",
+      "to_index": 1
+    },
+    {
+      "op": "add_item",
+      "item": {
+        "type": "mcq",
+        "q": "ما هو المبدأ البرمجي في SOLID الذي ينص على أن: 'الكيانات البرمجية يجب أن تكون مفتوحة للتمديد، مغلقة للتعديل'؟",
+        "options": [
+          "Single Responsibility Principle (SRP)",
+          "Open/Closed Principle (OCP)",
+          "Liskov Substitution Principle (LSP)",
+          "Interface Segregation Principle (ISP)"
+        ],
+        "correct": "Open/Closed Principle (OCP)",
+        "points": 5,
+        "right": "إجابة صحيحة تماماً! هذا نص مبدأ الفتح والإغلاق OCP الذي صاغه برتراند ماير.",
+        "wrong": "إجابة غير صحيحة. المبدأ هو Open/Closed Principle (OCP).",
+        "qtype": "RADIO",
+        "shuffle": true,
+        "required": true
+      },
+      "at_index": 6
+    },
+    {
+      "op": "enable_quiz"
+    }
+  ]
+}

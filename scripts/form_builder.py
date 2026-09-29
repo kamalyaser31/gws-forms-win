@@ -10,19 +10,36 @@ Full API reference: see REFERENCE.md in this skill folder.
 
 import json
 import os
+import re
+import shutil
 import subprocess
-import sys
+import tempfile
 from pathlib import Path
+from urllib.parse import urlparse
 
 # ─── Paths ───────────────────────────────────────────────────────────────────
 
 SKILL_SCRIPTS = Path(__file__).resolve().parent
 SKILL_ROOT = SKILL_SCRIPTS.parent
 
-NODE_EXE = os.environ.get("GWS_FORMS_NODE_EXE", r"C:\Program Files\nodejs\node.exe")
-GWS_JS = os.environ.get(
-    "GWS_FORMS_GWS_JS",
-    str(
+
+def resolve_node_exe() -> str:
+    """Resolve node executable dynamically from env or system PATH."""
+    env_node = os.environ.get("GWS_FORMS_NODE_EXE")
+    if env_node:
+        return env_node
+    which_node = shutil.which("node")
+    if which_node:
+        return which_node
+    return "node"
+
+
+def resolve_gws_js() -> str:
+    """Resolve run.js or run-gws.js entrypoint from env or standard npm prefix."""
+    env_gws = os.environ.get("GWS_FORMS_GWS_JS")
+    if env_gws:
+        return env_gws
+    cli_dir = (
         Path.home()
         / "AppData"
         / "Roaming"
@@ -30,9 +47,16 @@ GWS_JS = os.environ.get(
         / "node_modules"
         / "@googleworkspace"
         / "cli"
-        / "run-gws.js"
-    ),
-)
+    )
+    for candidate in ("run.js", "run-gws.js"):
+        target = cli_dir / candidate
+        if target.exists():
+            return str(target)
+    return str(cli_dir / "run.js")
+
+
+NODE_EXE = resolve_node_exe()
+GWS_JS = resolve_gws_js()
 
 
 class GwsCommandError(RuntimeError):
@@ -42,6 +66,53 @@ class GwsCommandError(RuntimeError):
         message = stderr.strip() or f"gws exited with code {returncode}"
         super().__init__(message)
         self.returncode = returncode
+
+
+# ─── URL parsing & storage helpers ──────────────────────────────────────────
+
+FORM_PATH = re.compile(r"^/forms/d/([^/]+)/(?:edit|viewform)/?$")
+ENCODED_FORM_PATH = re.compile(r"^/forms/d/e/[^/]+/viewform/?$")
+
+
+def extract_form_id(url: str) -> str:
+    """Return a form ID from an authenticated Google Forms URL."""
+    parsed_url = urlparse(url)
+    if parsed_url.scheme != "https" or parsed_url.netloc != "docs.google.com":
+        raise ValueError(
+            "Could not extract form_id from URL: must start with https://docs.google.com/forms/d/<ID>/edit"
+        )
+
+    if ENCODED_FORM_PATH.fullmatch(parsed_url.path):
+        raise ValueError(
+            "Encoded viewform URL (/e/...) does not expose the form_id. Use the Edit URL or --id directly."
+        )
+
+    form_match = FORM_PATH.fullmatch(parsed_url.path)
+    if form_match:
+        return form_match.group(1)
+    raise ValueError(
+        "Could not extract form_id from URL path. Use: https://docs.google.com/forms/d/<ID>/edit"
+    )
+
+
+def write_json_atomic(path: Path, content: object) -> None:
+    """Replace a JSON file only after its complete replacement is durable."""
+    destination = Path(path)
+    destination.parent.mkdir(parents=True, exist_ok=True)
+    descriptor, temporary_name = tempfile.mkstemp(
+        dir=destination.parent,
+        prefix=f".{destination.name}.",
+        suffix=".tmp",
+    )
+    temporary_path = Path(temporary_name)
+    try:
+        with os.fdopen(descriptor, "w", encoding="utf-8") as json_file:
+            json.dump(content, json_file, ensure_ascii=False, indent=2)
+            json_file.flush()
+            os.fsync(json_file.fileno())
+        os.replace(temporary_path, destination)
+    finally:
+        temporary_path.unlink(missing_ok=True)
 
 
 # ─── Core runner ─────────────────────────────────────────────────────────────
@@ -135,28 +206,47 @@ def batch_update(
     )
 
 
-def build_form(
-    title: str, items: list, document_title: str = "", quiz_mode: bool = False
-) -> dict:
-    """
-    One-shot: create form + optionally enable quiz + add all items.
-    Returns {"formId", "responderUri", "editUrl"}.
-    """
-    form_id, responder_url, _ = create_form(title, document_title)
-
+def build_requests_from_spec(spec: dict) -> list:
     all_requests = []
-
-    if quiz_mode:
+    description = spec.get("desc") or spec.get("description")
+    if description:
+        all_requests.append(update_form_info_request(description=description))
+    if spec.get("quiz", False):
         all_requests.append(enable_quiz_request())
+    for idx, item in enumerate(spec.get("items", [])):
+        all_requests.append(build_item_request(item, idx))
+    return all_requests
 
-    all_requests.extend(items)
+
+_build_requests_from_spec = build_requests_from_spec
+
+
+def build_form(
+    spec_or_title,
+    items: list = None,
+    document_title: str = "",
+    quiz_mode: bool = False,
+) -> dict:
+    """One-shot: create form and apply all item/quiz requests atomically."""
+    if isinstance(spec_or_title, dict):
+        spec = spec_or_title
+        title = spec["title"]
+        document_title = spec.get("doc_title") or spec.get("document_title", title)
+        all_requests = _build_requests_from_spec(spec)
+    else:
+        title = spec_or_title
+        all_requests = [enable_quiz_request()] if quiz_mode else []
+        if items:
+            all_requests.extend(items)
+
+    form_id, responder_url, _ = create_form(title, document_title)
     if all_requests:
         batch_update(form_id, all_requests)
 
     edit_url = f"https://docs.google.com/forms/d/{form_id}/edit"
-    print("\n[OK] Form ready")
-    print(f"     Responder : {responder_url}")
-    print(f"     Edit      : {edit_url}")
+    print(
+        f"\n[OK] Form ready\n     Responder : {responder_url}\n     Edit      : {edit_url}"
+    )
     return {"formId": form_id, "responderUri": responder_url, "editUrl": edit_url}
 
 
@@ -244,38 +334,31 @@ def update_form_info_request(
 # ─── Item builders ───────────────────────────────────────────────────────────
 
 
-def make_page_break(title: str, index: int, description: str = "") -> dict:
-    """Section header / page break."""
-    item = {"title": title, "pageBreakItem": {}}
+def _build_section_request(spec: dict, index: int) -> dict:
+    item = {"title": spec["title"], "pageBreakItem": {}}
+    description = spec.get("desc") or spec.get("description", "")
     if description:
         item["description"] = description
     return {"createItem": {"item": item, "location": {"index": index}}}
 
 
-def make_text_item(title: str, index: int, description: str = "") -> dict:
-    """Static (non-interactive) text block."""
-    item = {"title": title, "textItem": {}}
+def _build_text_request(spec: dict, index: int) -> dict:
+    item = {"title": spec["title"], "textItem": {}}
+    description = spec.get("desc") or spec.get("description", "")
     if description:
         item["description"] = description
     return {"createItem": {"item": item, "location": {"index": index}}}
 
 
-def make_short_answer(
-    question_text: str, index: int, paragraph: bool = True, required: bool = True
-) -> dict:
-    """
-    Text question.
-    paragraph=True  -> multi-line paragraph
-    paragraph=False -> single-line short answer
-    """
+def _build_short_request(spec: dict, index: int) -> dict:
     return {
         "createItem": {
             "item": {
-                "title": question_text,
+                "title": spec["q"],
                 "questionItem": {
                     "question": {
-                        "required": required,
-                        "textQuestion": {"paragraph": paragraph},
+                        "required": spec.get("required", True),
+                        "textQuestion": {"paragraph": spec.get("paragraph", True)},
                     }
                 },
             },
@@ -284,76 +367,50 @@ def make_short_answer(
     }
 
 
-def make_mcq(
-    question_text: str,
-    options: list,
-    index: int,
-    question_type: str = "RADIO",
-    shuffle: bool = False,
-    required: bool = True,
-) -> dict:
-    """
-    Choice question.
-    question_type: "RADIO" | "CHECKBOX" | "DROP_DOWN"
-    options: list of strings e.g. ["A. Yes", "B. No"]
-    """
-    return {
-        "createItem": {
-            "item": {
-                "title": question_text,
-                "questionItem": {
-                    "question": {
-                        "required": required,
-                        "choiceQuestion": {
-                            "type": question_type,
-                            "options": [{"value": opt} for opt in options],
-                            "shuffle": shuffle,
-                        },
-                    }
-                },
-            },
-            "location": {"index": index},
-        }
-    }
-
-
-def make_mcq_graded(
-    question_text: str,
-    options: list,
-    index: int,
-    correct: str,
-    points: int = 1,
-    feedback_right: str = "",
-    feedback_wrong: str = "",
-    question_type: str = "RADIO",
-    required: bool = True,
-) -> dict:
-    """
-    Choice question with automatic grading (quiz mode must be enabled).
-    correct: the exact string value of the correct option.
-    """
+def _build_choice_grading(spec: dict) -> dict:
     grading = {
-        "pointValue": points,
-        "correctAnswers": {"answers": [{"value": correct}]},
+        "pointValue": spec.get("points", 1),
+        "correctAnswers": {"answers": [{"value": spec["correct"]}]},
     }
-    if feedback_right:
-        grading["whenRight"] = {"text": feedback_right}
-    if feedback_wrong:
-        grading["whenWrong"] = {"text": feedback_wrong}
+    if spec.get("right") or "right" not in spec:
+        grading["whenRight"] = {"text": spec.get("right", "Correct!")}
+    if spec.get("wrong"):
+        grading["whenWrong"] = {"text": spec["wrong"]}
+    return grading
 
+
+def _build_mcq_request(spec: dict, index: int) -> dict:
+    is_graded = "correct" in spec
+    choice = {
+        "type": spec.get("qtype", "RADIO"),
+        "options": [{"value": opt} for opt in spec["options"]],
+        "shuffle": False if is_graded else spec.get("shuffle", False),
+    }
+    question = {"required": spec.get("required", True), "choiceQuestion": choice}
+    if is_graded:
+        question["grading"] = _build_choice_grading(spec)
+    return {
+        "createItem": {
+            "item": {"title": spec["q"], "questionItem": {"question": question}},
+            "location": {"index": index},
+        }
+    }
+
+
+def _build_scale_request(spec: dict, index: int) -> dict:
+    scale_payload = {"low": spec.get("low", 1), "high": spec.get("high", 5)}
+    if spec.get("low_label"):
+        scale_payload["lowLabel"] = spec["low_label"]
+    if spec.get("high_label"):
+        scale_payload["highLabel"] = spec["high_label"]
     return {
         "createItem": {
             "item": {
-                "title": question_text,
+                "title": spec["q"],
                 "questionItem": {
                     "question": {
-                        "required": required,
-                        "choiceQuestion": {
-                            "type": question_type,
-                            "options": [{"value": opt} for opt in options],
-                            "shuffle": False,
-                        },
-                        "grading": grading,
+                        "required": spec.get("required", False),
+                        "scaleQuestion": scale_payload,
                     }
                 },
             },
@@ -362,52 +419,17 @@ def make_mcq_graded(
     }
 
 
-def make_scale(
-    question_text: str,
-    index: int,
-    low: int = 1,
-    high: int = 5,
-    low_label: str = "",
-    high_label: str = "",
-    required: bool = False,
-) -> dict:
-    """Linear scale question (1–10 range)."""
-    q = {"low": low, "high": high}
-    if low_label:
-        q["lowLabel"] = low_label
-    if high_label:
-        q["highLabel"] = high_label
+def _build_date_request(spec: dict, index: int) -> dict:
     return {
         "createItem": {
             "item": {
-                "title": question_text,
-                "questionItem": {
-                    "question": {"required": required, "scaleQuestion": q}
-                },
-            },
-            "location": {"index": index},
-        }
-    }
-
-
-def make_date(
-    question_text: str,
-    index: int,
-    include_time: bool = False,
-    include_year: bool = True,
-    required: bool = False,
-) -> dict:
-    """Date (and optionally time) question."""
-    return {
-        "createItem": {
-            "item": {
-                "title": question_text,
+                "title": spec["q"],
                 "questionItem": {
                     "question": {
-                        "required": required,
+                        "required": spec.get("required", False),
                         "dateQuestion": {
-                            "includeTime": include_time,
-                            "includeYear": include_year,
+                            "includeTime": spec.get("time", False),
+                            "includeYear": spec.get("year", True),
                         },
                     }
                 },
@@ -417,22 +439,15 @@ def make_date(
     }
 
 
-def make_time(
-    question_text: str, index: int, duration: bool = False, required: bool = False
-) -> dict:
-    """
-    Time question.
-    duration=False -> time of day (HH:MM)
-    duration=True  -> elapsed duration
-    """
+def _build_time_request(spec: dict, index: int) -> dict:
     return {
         "createItem": {
             "item": {
-                "title": question_text,
+                "title": spec["q"],
                 "questionItem": {
                     "question": {
-                        "required": required,
-                        "timeQuestion": {"duration": duration},
+                        "required": spec.get("required", False),
+                        "timeQuestion": {"duration": spec.get("duration", False)},
                     }
                 },
             },
@@ -441,27 +456,17 @@ def make_time(
     }
 
 
-def make_rating(
-    question_text: str,
-    index: int,
-    scale: int = 5,
-    icon: str = "STAR",
-    required: bool = False,
-) -> dict:
-    """
-    Rating question.
-    icon: "STAR" | "HEART" | "THUMB_UP"
-    """
+def _build_rating_request(spec: dict, index: int) -> dict:
     return {
         "createItem": {
             "item": {
-                "title": question_text,
+                "title": spec["q"],
                 "questionItem": {
                     "question": {
-                        "required": required,
+                        "required": spec.get("required", False),
                         "ratingQuestion": {
-                            "ratingScaleLevel": scale,
-                            "iconType": icon,
+                            "ratingScaleLevel": spec.get("scale", 5),
+                            "iconType": spec.get("icon", "STAR"),
                         },
                     }
                 },
@@ -471,110 +476,88 @@ def make_rating(
     }
 
 
-def make_grid(
-    title: str,
-    rows: list,
-    col_options: list,
-    index: int,
-    col_type: str = "RADIO",
-    shuffle_rows: bool = False,
-    required: bool = False,
-) -> dict:
-    """
-    Grid question (questionGroupItem).
-    rows: list of row label strings
-    col_options: list of column value strings
-    col_type: "RADIO" | "CHECKBOX"
-    """
+def _build_grid_request(spec: dict, index: int) -> dict:
+    rows = [
+        {"rowQuestion": {"title": r}, "required": spec.get("required", False)}
+        for r in spec["rows"]
+    ]
+    grid = {
+        "columns": {
+            "type": spec.get("col_type", "RADIO"),
+            "options": [{"value": c} for c in spec["cols"]],
+        },
+        "shuffleQuestions": spec.get("shuffle_rows", False),
+    }
     return {
         "createItem": {
             "item": {
-                "title": title,
-                "questionGroupItem": {
-                    "questions": [
-                        {"rowQuestion": {"title": r}, "required": required}
-                        for r in rows
-                    ],
-                    "grid": {
-                        "columns": {
-                            "type": col_type,
-                            "options": [{"value": c} for c in col_options],
-                        },
-                        "shuffleQuestions": shuffle_rows,
-                    },
-                },
+                "title": spec["title"],
+                "questionGroupItem": {"questions": rows, "grid": grid},
             },
             "location": {"index": index},
         }
     }
 
 
-def make_video(
-    title: str,
-    youtube_uri: str,
-    index: int,
-    caption: str = "",
-    alignment: str = "CENTER",
-    width: int = 640,
-) -> dict:
-    """YouTube video item."""
-    item = {
-        "title": title,
-        "videoItem": {
-            "video": {
-                "youtubeUri": youtube_uri,
-                "properties": {"alignment": alignment, "width": width},
-            }
+def _build_video_request(spec: dict, index: int) -> dict:
+    video_payload = {
+        "video": {
+            "youtubeUri": spec["uri"],
+            "properties": {
+                "alignment": spec.get("align", "CENTER"),
+                "width": spec.get("width", 640),
+            },
+        }
+    }
+    if spec.get("caption"):
+        video_payload["caption"] = spec["caption"]
+    return {
+        "createItem": {
+            "item": {"title": spec["title"], "videoItem": video_payload},
+            "location": {"index": index},
+        }
+    }
+
+
+def _build_image_request(spec: dict, index: int) -> dict:
+    image_payload = {
+        "sourceUri": spec["uri"],
+        "altText": spec.get("alt", ""),
+        "properties": {
+            "alignment": spec.get("align", "CENTER"),
+            "width": spec.get("width", 640),
         },
     }
-    if caption:
-        item["videoItem"]["caption"] = caption
-    return {"createItem": {"item": item, "location": {"index": index}}}
-
-
-def make_image(
-    title: str,
-    source_uri: str,
-    index: int,
-    alt_text: str = "",
-    alignment: str = "CENTER",
-    width: int = 640,
-) -> dict:
-    """Image item (sourceUri must be a public URL)."""
-    item = {
-        "title": title,
-        "imageItem": {
-            "image": {
-                "sourceUri": source_uri,
-                "altText": alt_text,
-                "properties": {"alignment": alignment, "width": width},
-            }
-        },
+    return {
+        "createItem": {
+            "item": {
+                "title": spec["title"],
+                "imageItem": {"image": image_payload},
+            },
+            "location": {"index": index},
+        }
     }
-    return {"createItem": {"item": item, "location": {"index": index}}}
 
 
-# ─── Example / smoke test ────────────────────────────────────────────────────
+ITEM_BUILDERS = {
+    "section": _build_section_request,
+    "text": _build_text_request,
+    "short": _build_short_request,
+    "mcq": _build_mcq_request,
+    "scale": _build_scale_request,
+    "date": _build_date_request,
+    "time": _build_time_request,
+    "rating": _build_rating_request,
+    "grid": _build_grid_request,
+    "video": _build_video_request,
+    "image": _build_image_request,
+}
 
-if __name__ == "__main__":
-    items = [
-        make_page_break("Section 1 — Text Questions", 0, "Answer fully."),
-        make_short_answer("What is your name?", 1, paragraph=False),
-        make_short_answer("Describe yourself.", 2, paragraph=True),
-        make_page_break("Section 2 — Choice Questions", 3),
-        make_mcq("Favourite colour?", ["A. Red", "B. Blue", "C. Green"], 4),
-        make_scale("Rate this form:", 5, 1, 5, "Poor", "Excellent"),
-        make_date("Your date of birth:", 6, include_year=True),
-        make_grid(
-            "Rate each subject:",
-            ["Math", "Science", "Arabic"],
-            ["Poor", "Good", "Excellent"],
-            7,
-        ),
-    ]
-    try:
-        created_form = build_form("Test Form — All Types", items, quiz_mode=False)
-    except GwsCommandError as error:
-        print(f"[ERROR] {error}", file=sys.stderr)
-        sys.exit(error.returncode)
-    print(created_form)
+
+def build_item_request(spec: dict, index: int) -> dict:
+    """Convert one JSON item specification into a createItem request."""
+    item_type = spec.get("type", "").lower()
+    builder = ITEM_BUILDERS.get(item_type)
+    if builder is None:
+        raise ValueError(f"Unknown item type: '{item_type}'")
+    return builder(spec, index)

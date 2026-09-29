@@ -23,13 +23,14 @@ JSON spec:
     }
 
 Rules:
-    - Requires a snapshot in SKILL_ROOT/snapshots/<form_id>_snapshot.json.
+    - Requires a snapshot in current directory (<form_id>_snapshot.json) or specified path.
     - Each op runs in its own batchUpdate call (sequential, not batched together).
     - delete_item and move_item use item_id from the snapshot, never index.
     - add_item, delete_item, and move_item refresh the snapshot after success.
     - Snapshot older than 30 min triggers a warning (execution continues).
 """
 
+import argparse
 import json
 import sys
 from datetime import datetime, timezone, timedelta
@@ -38,20 +39,19 @@ from pathlib import Path
 # ── locate siblings ───────────────────────────────────────────────────────────
 SKILL_DIR = Path(__file__).resolve().parent
 SKILL_ROOT = SKILL_DIR.parent
-SNAPSHOTS_DIR = SKILL_ROOT / "snapshots"
 
 sys.path.insert(0, str(SKILL_DIR))
 from form_builder import (  # noqa: E402
     GwsCommandError,
     batch_update,
-    update_form_info_request,
-    enable_quiz_request,
-    set_publish,
+    build_item_request,
+    enable_quiz,
     get_form,
+    set_publish,
+    update_form_info_request,
+    write_json_atomic,
 )
-from json_runner import dispatch  # reuse item dispatcher  # noqa: E402
 from form_fetcher import build_snapshot  # noqa: E402
-from json_files import write_json_atomic  # noqa: E402
 
 STALE_MINUTES = 30
 INDEX_OPERATIONS = {"add_item", "delete_item", "move_item"}
@@ -64,16 +64,27 @@ class OperationSpecError(ValueError):
 # ─── Snapshot helpers ─────────────────────────────────────────────────────────
 
 
-def load_snapshot(form_id: str) -> dict:
-    path = Path(SNAPSHOTS_DIR) / f"{form_id}_snapshot.json"
+def load_snapshot(form_id: str, snapshot_path: Path | None = None) -> dict:
+    if snapshot_path:
+        path = Path(snapshot_path)
+    else:
+        candidates = [
+            Path.cwd() / f"{form_id}_snapshot.json",
+            SKILL_ROOT / "snapshots" / f"{form_id}_snapshot.json",
+            SKILL_ROOT / "output" / "snapshots" / f"{form_id}_snapshot.json",
+        ]
+        path = next((p for p in candidates if p.exists()), candidates[0])
+
     if not path.exists():
         print(
             f"[ERROR] Snapshot not found: {path}\n"
-            f"        Run first:  python form_fetcher.py --id {form_id}"
+            f"        Run first:  python scripts/form_fetcher.py --id {form_id}"
         )
         sys.exit(1)
     with path.open(encoding="utf-8") as snapshot_file:
         snap = json.load(snapshot_file)
+
+    snap["_snapshot_path"] = str(path)
 
     # Stale check
     fetched_at_str = snap.get("fetched_at", "")
@@ -94,16 +105,22 @@ def load_snapshot(form_id: str) -> dict:
     return snap
 
 
-def save_snapshot(form_id: str, snap: dict) -> None:
-    path = Path(SNAPSHOTS_DIR) / f"{form_id}_snapshot.json"
-    write_json_atomic(path, snap)
+def save_snapshot(form_id: str, snap: dict, snapshot_path: Path | None = None) -> Path:
+    target_path = snapshot_path or Path(
+        snap.get("_snapshot_path", Path.cwd() / f"{form_id}_snapshot.json")
+    )
+    clean_snap = {k: v for k, v in snap.items() if not k.startswith("_")}
+    write_json_atomic(target_path, clean_snap)
+    return target_path
 
 
-def refresh_snapshot(form_id: str) -> dict:
+def refresh_snapshot(form_id: str, snapshot_path: Path | None = None) -> dict:
     """Fetch and save the current form state after index-changing ops."""
     raw = get_form(form_id)
     snap = build_snapshot(form_id, raw)
-    save_snapshot(form_id, snap)
+    if snapshot_path:
+        snap["_snapshot_path"] = str(snapshot_path)
+    save_snapshot(form_id, snap, snapshot_path)
     print(f"  [OK] snapshot refreshed ({snap['item_count']} item(s))")
     return snap
 
@@ -134,7 +151,7 @@ def op_add_item(form_id: str, op: dict, snap: dict) -> None:
         raise OperationSpecError("'add_item' requires an 'item' object.")
     at_index = op.get("at_index", snap.get("item_count", 0))
     try:
-        req = dispatch(item_spec, at_index)
+        req = build_item_request(item_spec, at_index)
     except ValueError as error:
         raise OperationSpecError(str(error)) from error
     batch_update(form_id, [req], revision_id=snap.get("revisionId", ""))
@@ -188,7 +205,7 @@ def op_move_item(form_id: str, op: dict, snap: dict) -> None:
 
 
 def op_enable_quiz(form_id: str) -> None:
-    batch_update(form_id, [enable_quiz_request()])
+    enable_quiz(form_id)
     print("  [OK] enable_quiz")
 
 
@@ -213,7 +230,9 @@ OP_MAP = {
 }
 
 
-def execute_operation(form_id: str, op: dict, snap: dict) -> tuple[bool, dict]:
+def execute_operation(
+    form_id: str, op: dict, snap: dict, snapshot_path: Path | None = None
+) -> tuple[bool, dict]:
     """Execute one operation and return its success plus current snapshot."""
     op_name = op.get("op", "").strip()
     if op_name not in OP_MAP:
@@ -221,11 +240,8 @@ def execute_operation(form_id: str, op: dict, snap: dict) -> tuple[bool, dict]:
         return False, snap
 
     try:
-        if op_name in INDEX_OPERATIONS:
-            snap = refresh_snapshot(form_id)
         OP_MAP[op_name](form_id, op, snap)
-        if op_name in INDEX_OPERATIONS:
-            snap = refresh_snapshot(form_id)
+        snap = refresh_snapshot(form_id, snapshot_path=snapshot_path)
     except (GwsCommandError, OperationSpecError) as error:
         print(f"  [ERROR] {op_name}: {error}", file=sys.stderr)
         return False, snap
@@ -236,34 +252,50 @@ def execute_operation(form_id: str, op: dict, snap: dict) -> tuple[bool, dict]:
 
 
 def main() -> int:
-    if len(sys.argv) < 2:
-        print("Usage: python form_updater.py <update_spec.json>")
+    parser = argparse.ArgumentParser(
+        description="Apply update operations to an existing Google Form."
+    )
+    parser.add_argument("spec", type=Path, help="Path to update spec JSON")
+    parser.add_argument(
+        "-s",
+        "--snapshot",
+        type=Path,
+        default=None,
+        help="Path to snapshot JSON (default: <form_id>_snapshot.json in current directory)",
+    )
+    args = parser.parse_args()
+
+    if not args.spec.exists():
+        print(f"[ERROR] Spec file not found: {args.spec}", file=sys.stderr)
         sys.exit(1)
 
-    spec_path = Path(sys.argv[1])
-    if not spec_path.exists():
-        print(f"[ERROR] Spec file not found: {spec_path}")
-        sys.exit(1)
-
-    with spec_path.open(encoding="utf-8") as spec_file:
+    with args.spec.open(encoding="utf-8") as spec_file:
         spec = json.load(spec_file)
 
     form_id = spec.get("form_id", "").strip()
     if not form_id:
-        print("[ERROR] 'form_id' is missing from the spec.")
+        print("[ERROR] 'form_id' is missing from the spec.", file=sys.stderr)
         sys.exit(1)
 
     ops = spec.get("ops", [])
     if not ops:
-        print("[ERROR] 'ops' list is missing or empty. Nothing to do.")
+        print("[ERROR] 'ops' list is missing or empty. Nothing to do.", file=sys.stderr)
         sys.exit(1)
 
-    snap = load_snapshot(form_id)
+    snapshot_override = (
+        args.snapshot
+        if args.snapshot
+        else (Path(spec["snapshot_path"]) if "snapshot_path" in spec else None)
+    )
+    snap = load_snapshot(form_id, snapshot_path=snapshot_override)
+    actual_snap_path = Path(snap["_snapshot_path"])
 
     print(f"\n>> Updating form: {form_id}  ({len(ops)} op(s))")
     completed = 0
     for op in ops:
-        succeeded, snap = execute_operation(form_id, op, snap)
+        succeeded, snap = execute_operation(
+            form_id, op, snap, snapshot_path=actual_snap_path
+        )
         completed += int(succeeded)
 
     failed = len(ops) - completed

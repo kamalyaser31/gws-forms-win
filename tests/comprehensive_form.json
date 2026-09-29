@@ -1,0 +1,143 @@
+{
+  "title": "الاختبار الشامل للعلوم والتقنية — Comprehensive Skill Simulation",
+  "desc": "استمارة نموذجية جامعة تحاكي دورة عمل مهارة gws-forms-win بكافة عناصرها الـ 11 ونظام التصحيح التلقائي.",
+  "doc_title": "Comprehensive_Exam_Simulation",
+  "quiz": true,
+  "items": [
+    {
+      "type": "section",
+      "title": "القسم الأول: التوجيهات والبيانات الأساسية",
+      "desc": "يرجى قراءة التعليمات بعناية قبل البدء في الإجابة."
+    },
+    {
+      "type": "text",
+      "title": "تنبيه أكاديمي هام",
+      "desc": "هذا الاختبار يقيس الاستيعاب المفاهيمي، وجميع الأسئلة تخضع للتصحيح الإلكتروني الفوري."
+    },
+    {
+      "type": "short",
+      "q": "الاسم الثلاثي للطالب / الباحث:",
+      "paragraph": false,
+      "required": true
+    },
+    {
+      "type": "date",
+      "q": "تاريخ ووقت بدء الجلسة الاختبارية:",
+      "time": true,
+      "year": true,
+      "required": true
+    },
+    {
+      "type": "section",
+      "title": "القسم الثاني: أسئلة الاختيار من متعدد والتصحيح الآلي",
+      "desc": "أسئلة موضوعية ترتبط بنقاط تقييمية وتغذية راجعة فورية."
+    },
+    {
+      "type": "mcq",
+      "q": "ما هو التعقيد الزمني (Time Complexity) لعملية البحث الثنائي (Binary Search) في مصفوفة مرتبة؟",
+      "options": [
+        "O(1)",
+        "O(n)",
+        "O(log n)",
+        "O(n log n)"
+      ],
+      "correct": "O(log n)",
+      "points": 5,
+      "right": "إجابة صحيحة ومتقنة! البحث الثنائي يقسم فضاء البحث إلى النصف في كل خطوة.",
+      "wrong": "إجابة غير صحيحة. البحث الثنائي يستغرق زمناً لوغاريتمياً O(log n).",
+      "qtype": "RADIO",
+      "shuffle": false,
+      "required": true
+    },
+    {
+      "type": "mcq",
+      "q": "أي من الأدوات التالية تُعد من محركات تشغيل JavaScript خارج المتصفح؟ (اختر ما ينطبق)",
+      "options": [
+        "Node.js",
+        "Deno",
+        "Bun",
+        "CPython"
+      ],
+      "qtype": "CHECKBOX",
+      "shuffle": true,
+      "required": true
+    },
+    {
+      "type": "section",
+      "title": "القسم الثالث: التقييم والمقاييس المتدرجة",
+      "desc": "أسئلة قياس الانطباع والمقاييس الخطية والرموز."
+    },
+    {
+      "type": "scale",
+      "q": "ما مدى وضوح المسائل البرمجية المطروحة؟",
+      "low": 1,
+      "high": 5,
+      "low_label": "غامضة تماماً",
+      "high_label": "واضحة وضوحاً تاماً",
+      "required": true
+    },
+    {
+      "type": "rating",
+      "q": "تقييمك الإجمالي لتجربة المنظومة التفاعلية:",
+      "scale": 5,
+      "icon": "STAR",
+      "required": true
+    },
+    {
+      "type": "time",
+      "q": "كم الوقت المستغرق في حل المسائل السابقة؟",
+      "duration": true,
+      "required": false
+    },
+    {
+      "type": "section",
+      "title": "القسم الرابع: شبكات التقييم والمصفوفات",
+      "desc": "تقييم المحاور المتعددة عبر شبكة الأسئلة (Grid)."
+    },
+    {
+      "type": "grid",
+      "title": "مصفوفة تقييم جودة المكونات البرمجية",
+      "rows": [
+        "سهولة القراءة والصيانة (Readability)",
+        "التغطية بالاختبارات المؤتمتة (Test Coverage)",
+        "الأداء واستهلاك الذاكرة (Performance)"
+      ],
+      "cols": [
+        "ضعيف",
+        "مقبول",
+        "جيد جداً",
+        "ممتاز"
+      ],
+      "col_type": "RADIO",
+      "shuffle_rows": false,
+      "required": true
+    },
+    {
+      "type": "section",
+      "title": "القسم الخامس: الوسائط الإيضاحية والأسئلة المقالية",
+      "desc": "دراسة الحالات المدعومة بالصور والمقاطع المرئية."
+    },
+    {
+      "type": "image",
+      "title": "مخطط هيكلية الشفرة النظيفة",
+      "uri": "https://www.google.com/images/branding/googlelogo/2x/googlelogo_color_272x92dp.png",
+      "alt": "شعار لغة بايثون التوضيحي",
+      "align": "CENTER",
+      "width": 640
+    },
+    {
+      "type": "video",
+      "title": "شرح مرئي مساند لمفاهيم الخوارزميات",
+      "uri": "https://www.youtube.com/watch?v=dQw4w9WgXcQ",
+      "caption": "مقطع مرئي توضيحي إضافي للمراجعة",
+      "align": "CENTER",
+      "width": 640
+    },
+    {
+      "type": "short",
+      "q": "في ضوء ما درسته، اشرح بإيجاز كيف تسهم الشفرة النظيفة (Clean Code) في خفض الدَّيْن التقني (Technical Debt):",
+      "paragraph": true,
+      "required": true
+    }
+  ]
+}
