@@ -10,7 +10,7 @@ description: >
 # gws-forms-win
 
 > **Prerequisites:** `gws` installed via npm (`npm i -g @googleworkspace/cli`) · Auth valid (`cmd /c "gws auth login"`)
-> **Full Schema Reference:** [REFERENCE.md](REFERENCE.md)
+> **Full Schema Reference:** [references/REFERENCE.md](references/REFERENCE.md)
 > **Scripts Directory:** [scripts/](scripts/)
 
 ---

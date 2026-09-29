@@ -5,7 +5,7 @@ form_builder.py — Reusable Google Forms builder for Windows via gws (npm).
 Key design: calls node.exe + run-gws.js directly to avoid PowerShell/cmd
 escaping issues with JSON containing special chars (&, ", ', —).
 
-Full API reference: see REFERENCE.md in this skill folder.
+Full API reference: see references/REFERENCE.md in this skill folder.
 """
 
 import json
