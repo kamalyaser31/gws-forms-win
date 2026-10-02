@@ -13,13 +13,11 @@ calls form_builder, and prints the URLs.
 """
 
 import argparse
-import json
 import sys
 from datetime import datetime, timezone
 from pathlib import Path
 
 SKILL_SCRIPTS = Path(__file__).resolve().parent
-SKILL_ROOT = SKILL_SCRIPTS.parent
 sys.path.insert(0, str(SKILL_SCRIPTS))
 
 from form_builder import (  # noqa: E402
@@ -52,15 +50,12 @@ def form_history_entry(title: str, created_form: dict) -> dict:
     }
 
 
-def record_local_outputs(
-    title: str, created_form: dict, history_path: Path | None = None
-) -> None:
-    if not history_path:
-        return
+def record_history(history_path: Path, title: str, created_form: dict) -> None:
+    """Log the new form; a log failure only warns, since the form already exists."""
     try:
         append_history(history_path, form_history_entry(title, created_form))
         print(f"[OK] Form saved to history log -> {history_path}")
-    except (OSError, ValueError, json.JSONDecodeError) as error:
+    except (OSError, ValueError) as error:
         print(f"[WARN] Failed to write history log: {error}", file=sys.stderr)
 
 
@@ -94,12 +89,9 @@ def main():
 
     print_created_form(created_form)
 
-    history_target = (
-        Path(args.history)
-        if args.history
-        else (Path(spec["history_path"]) if "history_path" in spec else None)
-    )
-    record_local_outputs(title, created_form, history_path=history_target)
+    history_path = args.history or spec.get("history_path")
+    if history_path:
+        record_history(Path(history_path), title, created_form)
 
 
 if __name__ == "__main__":

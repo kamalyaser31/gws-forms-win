@@ -13,5 +13,7 @@ Agent skill that builds, updates, and reads Google Forms on Windows through the 
 - JSON inputs are read with `utf-8-sig`.
 
 ## State
-- 30 offline tests pass (`tests/run_tests.py`); `tests/simulate_lifecycle.py` runs clean; flake8 clean at 88.
-- Pending: live check of the `--after` filter format (see [task.md](task.md)).
+- 31 offline tests pass (`tests/run_tests.py`); `tests/simulate_lifecycle.py` runs clean; flake8 clean at 88.
+- The `--after` filter is unquoted (`timestamp > 2026-01-01T00:00:00Z`); verified live on 2026-10-02, the quoted form fails with `Unparseable date`.
+- Creation verified live on 2026-10-02 with `tests/comprehensive_form.json`: all 17 items, all 11 types, in order. Batch splitting has not yet been exercised live (that spec fits in one call).
+- Pending: none.

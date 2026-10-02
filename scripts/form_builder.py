@@ -19,9 +19,6 @@ from urllib.parse import urlparse
 
 # ─── Paths ───────────────────────────────────────────────────────────────────
 
-SKILL_SCRIPTS = Path(__file__).resolve().parent
-SKILL_ROOT = SKILL_SCRIPTS.parent
-
 
 def resolve_node_exe() -> str:
     """Resolve node executable dynamically from env or system PATH."""
@@ -216,17 +213,13 @@ def run_gws(
 
 def create_form(title: str, document_title: str = "") -> tuple:
     """
-    Create an empty form. Returns (form_id, responder_url, revision_id).
+    Create an empty form. Returns (form_id, responder_url).
     NOTE: Only title/documentTitle accepted at creation time.
           All items must be added via batchUpdate afterward.
     """
     body = {"info": {"title": title, "documentTitle": document_title or title}}
     created_form = run_gws(["forms", "forms", "create"], json_body=body)
-    return (
-        created_form["formId"],
-        created_form.get("responderUri", ""),
-        created_form.get("revisionId", ""),
-    )
+    return created_form["formId"], created_form.get("responderUri", "")
 
 
 # Windows caps a whole command line at 32,767 characters, and the batch body
@@ -254,18 +247,11 @@ def chunk_requests(requests: list, budget: int) -> list:
     return chunks
 
 
-def batch_update(
-    form_id: str,
-    requests: list,
-    include_form: bool = False,
-    revision_id: str = "",
-) -> dict:
+def batch_update(form_id: str, requests: list, revision_id: str = "") -> dict:
     """Push request dicts to an existing form, in as many calls as Windows needs."""
     response = {}
     for chunk_number, chunk in enumerate(chunk_requests(requests, MAX_BATCH_ARG_CHARS)):
         body = {"requests": chunk}
-        if include_form:
-            body["includeFormInResponse"] = True
         # Later chunks would always fail the guard: the first chunk itself
         # moves the form to a new revision.
         if revision_id and chunk_number == 0:
@@ -309,25 +295,13 @@ def build_requests_from_spec(spec: dict) -> list:
     return all_requests
 
 
-def build_form(
-    spec_or_title,
-    items: list = None,
-    document_title: str = "",
-    quiz_mode: bool = False,
-) -> dict:
-    """Create a form and apply its requests; validates a spec before creating."""
-    if isinstance(spec_or_title, dict):
-        spec = spec_or_title
-        all_requests = build_requests_from_spec(spec)
-        title = spec["title"]
-        document_title = spec.get("doc_title") or spec.get("document_title", title)
-    else:
-        title = spec_or_title
-        all_requests = [enable_quiz_request()] if quiz_mode else []
-        if items:
-            all_requests.extend(items)
+def build_form(spec: dict) -> dict:
+    """Validate a form spec, create the form, and apply its requests."""
+    all_requests = build_requests_from_spec(spec)
+    title = spec["title"]
+    document_title = spec.get("doc_title") or spec.get("document_title", title)
 
-    form_id, responder_url, _ = create_form(title, document_title)
+    form_id, responder_url = create_form(title, document_title)
     edit_url = f"https://docs.google.com/forms/d/{form_id}/edit"
     if all_requests:
         try:
@@ -354,7 +328,8 @@ def list_responses(form_id: str, page_size: int = 100, after: str = "") -> list:
     while True:
         p = {"formId": form_id, "pageSize": page_size}
         if after:
-            p["filter"] = f'timestamp > "{after}"'
+            # The API rejects a quoted timestamp ("Unparseable date").
+            p["filter"] = f"timestamp > {after}"
         if page_token:
             p["pageToken"] = page_token
 
@@ -416,43 +391,41 @@ def update_form_info_request(
     if document_title is not None:
         info["documentTitle"] = document_title
         mask_parts.append("documentTitle")
-    return {"updateFormInfo": {"info": info, "updateMask": ",".join(mask_parts) or "*"}}
+    return {"updateFormInfo": {"info": info, "updateMask": ",".join(mask_parts)}}
 
 
 # ─── Item builders ───────────────────────────────────────────────────────────
 
 
-def _build_section_request(spec: dict, index: int) -> dict:
-    item = {"title": spec["title"], "pageBreakItem": {}}
+def _create_item(item: dict, index: int) -> dict:
+    return {"createItem": {"item": item, "location": {"index": index}}}
+
+
+def _question_request(spec: dict, index: int, required: bool, **question) -> dict:
+    """Wrap a question body in the createItem shape every question type shares."""
+    body = {"required": spec.get("required", required), **question}
+    return _create_item({"title": spec["q"], "questionItem": {"question": body}}, index)
+
+
+def _layout_request(spec: dict, index: int, item_key: str) -> dict:
+    item = {"title": spec["title"], item_key: {}}
     description = spec.get("desc") or spec.get("description", "")
     if description:
         item["description"] = description
-    return {"createItem": {"item": item, "location": {"index": index}}}
+    return _create_item(item, index)
+
+
+def _build_section_request(spec: dict, index: int) -> dict:
+    return _layout_request(spec, index, "pageBreakItem")
 
 
 def _build_text_request(spec: dict, index: int) -> dict:
-    item = {"title": spec["title"], "textItem": {}}
-    description = spec.get("desc") or spec.get("description", "")
-    if description:
-        item["description"] = description
-    return {"createItem": {"item": item, "location": {"index": index}}}
+    return _layout_request(spec, index, "textItem")
 
 
 def _build_short_request(spec: dict, index: int) -> dict:
-    return {
-        "createItem": {
-            "item": {
-                "title": spec["q"],
-                "questionItem": {
-                    "question": {
-                        "required": spec.get("required", True),
-                        "textQuestion": {"paragraph": spec.get("paragraph", True)},
-                    }
-                },
-            },
-            "location": {"index": index},
-        }
-    }
+    text_question = {"paragraph": spec.get("paragraph", True)}
+    return _question_request(spec, index, True, textQuestion=text_question)
 
 
 def _correct_values(spec: dict) -> list:
@@ -483,110 +456,56 @@ def _build_choice_grading(spec: dict) -> dict:
             "answers": [{"value": value} for value in _correct_values(spec)]
         },
     }
-    if spec.get("right") or "right" not in spec:
-        grading["whenRight"] = {"text": spec.get("right", "Correct!")}
+    # An explicit empty "right" turns the default praise off.
+    right_text = spec.get("right", "Correct!")
+    if right_text:
+        grading["whenRight"] = {"text": right_text}
     if spec.get("wrong"):
         grading["whenWrong"] = {"text": spec["wrong"]}
     return grading
 
 
 def _build_mcq_request(spec: dict, index: int) -> dict:
-    is_graded = "correct" in spec
-    if is_graded:
-        _validate_correct_answers(spec)
     choice = {
         "type": spec.get("qtype", "RADIO"),
         "options": [{"value": opt} for opt in spec["options"]],
         "shuffle": spec.get("shuffle", False),
     }
-    question = {"required": spec.get("required", True), "choiceQuestion": choice}
-    if is_graded:
-        question["grading"] = _build_choice_grading(spec)
-    return {
-        "createItem": {
-            "item": {"title": spec["q"], "questionItem": {"question": question}},
-            "location": {"index": index},
-        }
-    }
+    grading = {}
+    if "correct" in spec:
+        _validate_correct_answers(spec)
+        grading["grading"] = _build_choice_grading(spec)
+    return _question_request(spec, index, True, choiceQuestion=choice, **grading)
 
 
 def _build_scale_request(spec: dict, index: int) -> dict:
-    scale_payload = {"low": spec.get("low", 1), "high": spec.get("high", 5)}
+    scale = {"low": spec.get("low", 1), "high": spec.get("high", 5)}
     if spec.get("low_label"):
-        scale_payload["lowLabel"] = spec["low_label"]
+        scale["lowLabel"] = spec["low_label"]
     if spec.get("high_label"):
-        scale_payload["highLabel"] = spec["high_label"]
-    return {
-        "createItem": {
-            "item": {
-                "title": spec["q"],
-                "questionItem": {
-                    "question": {
-                        "required": spec.get("required", False),
-                        "scaleQuestion": scale_payload,
-                    }
-                },
-            },
-            "location": {"index": index},
-        }
-    }
+        scale["highLabel"] = spec["high_label"]
+    return _question_request(spec, index, False, scaleQuestion=scale)
 
 
 def _build_date_request(spec: dict, index: int) -> dict:
-    return {
-        "createItem": {
-            "item": {
-                "title": spec["q"],
-                "questionItem": {
-                    "question": {
-                        "required": spec.get("required", False),
-                        "dateQuestion": {
-                            "includeTime": spec.get("time", False),
-                            "includeYear": spec.get("year", True),
-                        },
-                    }
-                },
-            },
-            "location": {"index": index},
-        }
+    date = {
+        "includeTime": spec.get("time", False),
+        "includeYear": spec.get("year", True),
     }
+    return _question_request(spec, index, False, dateQuestion=date)
 
 
 def _build_time_request(spec: dict, index: int) -> dict:
-    return {
-        "createItem": {
-            "item": {
-                "title": spec["q"],
-                "questionItem": {
-                    "question": {
-                        "required": spec.get("required", False),
-                        "timeQuestion": {"duration": spec.get("duration", False)},
-                    }
-                },
-            },
-            "location": {"index": index},
-        }
-    }
+    time = {"duration": spec.get("duration", False)}
+    return _question_request(spec, index, False, timeQuestion=time)
 
 
 def _build_rating_request(spec: dict, index: int) -> dict:
-    return {
-        "createItem": {
-            "item": {
-                "title": spec["q"],
-                "questionItem": {
-                    "question": {
-                        "required": spec.get("required", False),
-                        "ratingQuestion": {
-                            "ratingScaleLevel": spec.get("scale", 5),
-                            "iconType": spec.get("icon", "STAR"),
-                        },
-                    }
-                },
-            },
-            "location": {"index": index},
-        }
+    rating = {
+        "ratingScaleLevel": spec.get("scale", 5),
+        "iconType": spec.get("icon", "STAR"),
     }
+    return _question_request(spec, index, False, ratingQuestion=rating)
 
 
 def _build_grid_request(spec: dict, index: int) -> dict:
@@ -601,94 +520,55 @@ def _build_grid_request(spec: dict, index: int) -> dict:
         },
         "shuffleQuestions": spec.get("shuffle_rows", False),
     }
-    return {
-        "createItem": {
-            "item": {
-                "title": spec["title"],
-                "questionGroupItem": {"questions": rows, "grid": grid},
-            },
-            "location": {"index": index},
-        }
-    }
+    group = {"questions": rows, "grid": grid}
+    return _create_item({"title": spec["title"], "questionGroupItem": group}, index)
+
+
+def _media_properties(spec: dict) -> dict:
+    return {"alignment": spec.get("align", "CENTER"), "width": spec.get("width", 640)}
 
 
 def _build_video_request(spec: dict, index: int) -> dict:
-    video_payload = {
-        "video": {
-            "youtubeUri": spec["uri"],
-            "properties": {
-                "alignment": spec.get("align", "CENTER"),
-                "width": spec.get("width", 640),
-            },
-        }
+    video_item = {
+        "video": {"youtubeUri": spec["uri"], "properties": _media_properties(spec)}
     }
     if spec.get("caption"):
-        video_payload["caption"] = spec["caption"]
-    return {
-        "createItem": {
-            "item": {"title": spec["title"], "videoItem": video_payload},
-            "location": {"index": index},
-        }
-    }
+        video_item["caption"] = spec["caption"]
+    return _create_item({"title": spec["title"], "videoItem": video_item}, index)
 
 
 def _build_image_request(spec: dict, index: int) -> dict:
-    image_payload = {
+    image = {
         "sourceUri": spec["uri"],
         "altText": spec.get("alt", ""),
-        "properties": {
-            "alignment": spec.get("align", "CENTER"),
-            "width": spec.get("width", 640),
-        },
+        "properties": _media_properties(spec),
     }
-    return {
-        "createItem": {
-            "item": {
-                "title": spec["title"],
-                "imageItem": {"image": image_payload},
-            },
-            "location": {"index": index},
-        }
-    }
+    return _create_item({"title": spec["title"], "imageItem": {"image": image}}, index)
 
 
-ITEM_BUILDERS = {
-    "section": _build_section_request,
-    "text": _build_text_request,
-    "short": _build_short_request,
-    "mcq": _build_mcq_request,
-    "scale": _build_scale_request,
-    "date": _build_date_request,
-    "time": _build_time_request,
-    "rating": _build_rating_request,
-    "grid": _build_grid_request,
-    "video": _build_video_request,
-    "image": _build_image_request,
-}
-
-
-REQUIRED_ITEM_KEYS = {
-    "section": ("title",),
-    "text": ("title",),
-    "short": ("q",),
-    "mcq": ("q", "options"),
-    "scale": ("q",),
-    "date": ("q",),
-    "time": ("q",),
-    "rating": ("q",),
-    "grid": ("title", "rows", "cols"),
-    "video": ("title", "uri"),
-    "image": ("title", "uri"),
+# type -> (builder, keys the spec must provide)
+ITEM_TYPES = {
+    "section": (_build_section_request, ("title",)),
+    "text": (_build_text_request, ("title",)),
+    "short": (_build_short_request, ("q",)),
+    "mcq": (_build_mcq_request, ("q", "options")),
+    "scale": (_build_scale_request, ("q",)),
+    "date": (_build_date_request, ("q",)),
+    "time": (_build_time_request, ("q",)),
+    "rating": (_build_rating_request, ("q",)),
+    "grid": (_build_grid_request, ("title", "rows", "cols")),
+    "video": (_build_video_request, ("title", "uri")),
+    "image": (_build_image_request, ("title", "uri")),
 }
 
 
 def build_item_request(spec: dict, index: int) -> dict:
     """Convert one JSON item specification into a createItem request."""
     item_type = spec.get("type", "").lower()
-    builder = ITEM_BUILDERS.get(item_type)
-    if builder is None:
+    if item_type not in ITEM_TYPES:
         raise SpecError(f"Item {index}: unknown item type '{item_type}'.")
-    missing = [key for key in REQUIRED_ITEM_KEYS[item_type] if not spec.get(key)]
+    builder, required_keys = ITEM_TYPES[item_type]
+    missing = [key for key in required_keys if not spec.get(key)]
     if missing:
         raise SpecError(f"Item {index} ('{item_type}') is missing {missing}.")
     return builder(spec, index)

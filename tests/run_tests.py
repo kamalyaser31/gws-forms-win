@@ -184,6 +184,12 @@ class TestResponseNormalizer(unittest.TestCase):
         self.assertEqual([r["responseId"] for r in resps], ["r1", "r2"])
         self.assertEqual(mock_run_gws.call_args.kwargs["params"]["pageToken"], "t2")
 
+    def test_after_filter_is_unquoted(self):
+        with patch("form_builder.run_gws", return_value={}) as mock_run_gws:
+            list_responses("f", after="2026-01-01T00:00:00Z")
+        params = mock_run_gws.call_args.kwargs["params"]
+        self.assertEqual(params["filter"], "timestamp > 2026-01-01T00:00:00Z")
+
     def test_question_titles_labels_grid_rows(self):
         raw_form = {
             "items": [
@@ -256,7 +262,7 @@ class TestStorageAndNodeResolution(unittest.TestCase):
         with patch("form_builder.create_form") as mock_create, patch(
             "form_builder.batch_update"
         ) as mock_batch:
-            mock_create.return_value = ("f_id", "https://resp", "rev_1")
+            mock_create.return_value = ("f_id", "https://resp")
             mock_batch.return_value = {}
             res = build_form(spec)
 
@@ -339,9 +345,9 @@ class TestBatchingAndFailures(unittest.TestCase):
 
     def test_failed_items_report_the_created_form(self):
         spec = {"title": "T", "items": [{"type": "short", "q": "Name?"}]}
-        with patch(
-            "form_builder.create_form", return_value=("f_id", "resp", "rev")
-        ), patch("form_builder.batch_update", side_effect=GwsCommandError(1, "bad")):
+        with patch("form_builder.create_form", return_value=("f_id", "resp")), patch(
+            "form_builder.batch_update", side_effect=GwsCommandError(1, "bad")
+        ):
             with self.assertRaises(PartialFormError) as caught:
                 build_form(spec)
         self.assertIn("forms/d/f_id/edit", str(caught.exception))
@@ -351,7 +357,9 @@ class TestBatchingAndFailures(unittest.TestCase):
         with patch("form_updater.batch_update", return_value={}), patch(
             "form_updater.get_form", side_effect=GwsCommandError(1, "net")
         ):
-            succeeded, snap = execute_operation("f", op, {"items": []})
+            succeeded, snap = execute_operation(
+                "f", op, {"items": []}, Path("unused_snapshot.json")
+            )
         self.assertTrue(succeeded)
 
 

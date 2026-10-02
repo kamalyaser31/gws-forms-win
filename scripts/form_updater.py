@@ -39,8 +39,6 @@ from pathlib import Path
 
 # ── locate siblings ───────────────────────────────────────────────────────────
 SKILL_DIR = Path(__file__).resolve().parent
-SKILL_ROOT = SKILL_DIR.parent
-
 sys.path.insert(0, str(SKILL_DIR))
 from form_builder import (  # noqa: E402
     GwsCommandError,
@@ -65,27 +63,15 @@ class OperationSpecError(ValueError):
 # ─── Snapshot helpers ─────────────────────────────────────────────────────────
 
 
-def load_snapshot(form_id: str, snapshot_path: Path | None = None) -> dict:
-    if snapshot_path:
-        path = Path(snapshot_path)
-    else:
-        candidates = [
-            Path.cwd() / f"{form_id}_snapshot.json",
-            SKILL_ROOT / "snapshots" / f"{form_id}_snapshot.json",
-            SKILL_ROOT / "output" / "snapshots" / f"{form_id}_snapshot.json",
-        ]
-        path = next((p for p in candidates if p.exists()), candidates[0])
-
-    if not path.exists():
+def load_snapshot(form_id: str, snapshot_path: Path) -> dict:
+    if not snapshot_path.exists():
         print(
-            f"[ERROR] Snapshot not found: {path}\n"
+            f"[ERROR] Snapshot not found: {snapshot_path}\n"
             f"        Run first:  python scripts/form_fetcher.py --id {form_id}",
             file=sys.stderr,
         )
         sys.exit(1)
-    snap = read_json(path)
-
-    snap["_snapshot_path"] = str(path)
+    snap = read_json(snapshot_path)
 
     # Stale check
     fetched_at_str = snap.get("fetched_at", "")
@@ -106,22 +92,10 @@ def load_snapshot(form_id: str, snapshot_path: Path | None = None) -> dict:
     return snap
 
 
-def save_snapshot(form_id: str, snap: dict, snapshot_path: Path | None = None) -> Path:
-    target_path = snapshot_path or Path(
-        snap.get("_snapshot_path", Path.cwd() / f"{form_id}_snapshot.json")
-    )
-    clean_snap = {k: v for k, v in snap.items() if not k.startswith("_")}
-    write_json_atomic(target_path, clean_snap)
-    return target_path
-
-
-def refresh_snapshot(form_id: str, snapshot_path: Path | None = None) -> dict:
-    """Fetch and save the current form state after index-changing ops."""
-    raw = get_form(form_id)
-    snap = build_snapshot(form_id, raw)
-    if snapshot_path:
-        snap["_snapshot_path"] = str(snapshot_path)
-    save_snapshot(form_id, snap, snapshot_path)
+def refresh_snapshot(form_id: str, snapshot_path: Path) -> dict:
+    """Fetch the current form state and save it over the snapshot."""
+    snap = build_snapshot(form_id, get_form(form_id))
+    write_json_atomic(snapshot_path, snap)
     print(f"  [OK] snapshot refreshed ({snap['item_count']} item(s))")
     return snap
 
@@ -129,7 +103,7 @@ def refresh_snapshot(form_id: str, snapshot_path: Path | None = None) -> dict:
 # ─── Op handlers ──────────────────────────────────────────────────────────────
 
 
-def op_update_info(form_id: str, op: dict) -> None:
+def op_update_info(form_id: str, op: dict, snap: dict) -> None:
     title = op.get("title")
     description = op.get("description")
     document_title = op.get("document_title")
@@ -205,12 +179,12 @@ def op_move_item(form_id: str, op: dict, snap: dict) -> None:
     print(f"  [OK] move_item '{item_id}' (index {idx}) -> index {to_index}")
 
 
-def op_enable_quiz(form_id: str) -> None:
+def op_enable_quiz(form_id: str, op: dict, snap: dict) -> None:
     enable_quiz(form_id)
     print("  [OK] enable_quiz")
 
 
-def op_set_publish(form_id: str, op: dict) -> None:
+def op_set_publish(form_id: str, op: dict, snap: dict) -> None:
     published = op.get("published")
     if published is None:
         raise OperationSpecError("'set_publish' requires 'published' (true/false).")
@@ -221,18 +195,19 @@ def op_set_publish(form_id: str, op: dict) -> None:
 
 # ─── Dispatcher ───────────────────────────────────────────────────────────────
 
+# Every handler takes (form_id, op, snap), even if it ignores some of them.
 OP_MAP = {
-    "update_info": lambda form_id, op, snap: op_update_info(form_id, op),
+    "update_info": op_update_info,
     "add_item": op_add_item,
     "delete_item": op_delete_item,
     "move_item": op_move_item,
-    "enable_quiz": lambda form_id, op, snap: op_enable_quiz(form_id),
-    "set_publish": lambda form_id, op, snap: op_set_publish(form_id, op),
+    "enable_quiz": op_enable_quiz,
+    "set_publish": op_set_publish,
 }
 
 
 def execute_operation(
-    form_id: str, op: dict, snap: dict, snapshot_path: Path | None = None
+    form_id: str, op: dict, snap: dict, snapshot_path: Path
 ) -> tuple[bool, dict]:
     """Execute one operation and return its success plus current snapshot."""
     op_name = op.get("op", "").strip()
@@ -295,20 +270,17 @@ def main() -> int:
         print("[ERROR] 'ops' list is missing or empty. Nothing to do.", file=sys.stderr)
         sys.exit(1)
 
-    snapshot_override = (
+    snapshot_path = (
         args.snapshot
-        if args.snapshot
-        else (Path(spec["snapshot_path"]) if "snapshot_path" in spec else None)
+        or (Path(spec["snapshot_path"]) if "snapshot_path" in spec else None)
+        or Path.cwd() / f"{form_id}_snapshot.json"
     )
-    snap = load_snapshot(form_id, snapshot_path=snapshot_override)
-    actual_snap_path = Path(snap["_snapshot_path"])
+    snap = load_snapshot(form_id, snapshot_path)
 
     print(f"\n>> Updating form: {form_id}  ({len(ops)} op(s))")
     completed = 0
     for op in ops:
-        succeeded, snap = execute_operation(
-            form_id, op, snap, snapshot_path=actual_snap_path
-        )
+        succeeded, snap = execute_operation(form_id, op, snap, snapshot_path)
         completed += int(succeeded)
 
     failed = len(ops) - completed

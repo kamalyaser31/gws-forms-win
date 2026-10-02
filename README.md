@@ -93,7 +93,7 @@ gws-forms-win/
 │   ├── form_updater.py           # تطبيق عمليات التعديل على نموذج قائم
 │   └── form_reader.py            # جلب الردود وتطبيعها
 └── tests/
-    ├── run_tests.py              # اختبارات الوحدات (30 اختباراً)
+    ├── run_tests.py              # اختبارات الوحدات (31 اختباراً)
     ├── simulate_lifecycle.py     # محاكاة دورة العمل كاملة بمراحلها الأربع
     ├── comprehensive_form.json   # مواصفة تجمع الأنواع الأحد عشر
     └── comprehensive_update.json # مواصفة تجمع عمليات التعديل
