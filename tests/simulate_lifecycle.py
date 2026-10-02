@@ -25,7 +25,7 @@ from form_builder import (  # noqa: E402
     write_json_atomic,
 )
 from form_fetcher import build_snapshot  # noqa: E402
-from form_reader import normalise_response  # noqa: E402
+from form_reader import normalise_response, question_titles  # noqa: E402
 from form_updater import execute_operation, load_snapshot  # noqa: E402
 
 
@@ -145,7 +145,8 @@ def run_simulation() -> None:
                     mock_form_id, op, current_snap, snapshot_path=snapshot_path
                 )
                 print(
-                    f"  ✓ Executed op '{op['op']}': {'SUCCESS' if succeeded else 'FAILED'}"
+                    f"  ✓ Executed op '{op['op']}': "
+                    f"{'SUCCESS' if succeeded else 'FAILED'}"
                 )
 
     print(f"  ✓ Form items count after update: {current_snap['item_count']}")
@@ -170,7 +171,10 @@ def run_simulation() -> None:
                     "score": 5.0,
                     "correct": True,
                     "feedback": {
-                        "text": "إجابة صحيحة ومتقنة! البحث الثنائي يقسم فضاء البحث إلى النصف في كل خطوة."
+                        "text": (
+                            "إجابة صحيحة ومتقنة! البحث الثنائي يقسم "
+                            "فضاء البحث إلى النصف في كل خطوة."
+                        )
                     },
                 },
             },
@@ -183,7 +187,10 @@ def run_simulation() -> None:
                 "textAnswers": {
                     "answers": [
                         {
-                            "value": "تسهم الشفرة النظيفة في تسهيل فهم النظام وخفض تكلفة التعديل المستقبلي."
+                            "value": (
+                                "تسهم الشفرة النظيفة في تسهيل فهم النظام "
+                                "وخفض تكلفة التعديل المستقبلي."
+                            )
                         }
                     ]
                 },
@@ -191,7 +198,7 @@ def run_simulation() -> None:
         },
     }
 
-    clean_resp = normalise_response(mock_raw_response)
+    clean_resp = normalise_response(mock_raw_response, question_titles(mock_raw_form))
     final_output = {
         "form_id": mock_form_id,
         "fetched_at": datetime.now(timezone.utc).isoformat(),

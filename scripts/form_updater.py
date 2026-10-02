@@ -23,15 +23,16 @@ JSON spec:
     }
 
 Rules:
-    - Requires a snapshot in current directory (<form_id>_snapshot.json) or specified path.
+    - Requires a snapshot (<form_id>_snapshot.json in the current directory,
+      or a path given with -s).
     - Each op runs in its own batchUpdate call (sequential, not batched together).
     - delete_item and move_item use item_id from the snapshot, never index.
-    - add_item, delete_item, and move_item refresh the snapshot after success.
+    - Every successful op refreshes the snapshot; a failed refresh is a warning,
+      not a failed op, because the change itself was already applied.
     - Snapshot older than 30 min triggers a warning (execution continues).
 """
 
 import argparse
-import json
 import sys
 from datetime import datetime, timezone, timedelta
 from pathlib import Path
@@ -47,6 +48,7 @@ from form_builder import (  # noqa: E402
     build_item_request,
     enable_quiz,
     get_form,
+    read_json,
     set_publish,
     update_form_info_request,
     write_json_atomic,
@@ -54,7 +56,6 @@ from form_builder import (  # noqa: E402
 from form_fetcher import build_snapshot  # noqa: E402
 
 STALE_MINUTES = 30
-INDEX_OPERATIONS = {"add_item", "delete_item", "move_item"}
 
 
 class OperationSpecError(ValueError):
@@ -78,11 +79,11 @@ def load_snapshot(form_id: str, snapshot_path: Path | None = None) -> dict:
     if not path.exists():
         print(
             f"[ERROR] Snapshot not found: {path}\n"
-            f"        Run first:  python scripts/form_fetcher.py --id {form_id}"
+            f"        Run first:  python scripts/form_fetcher.py --id {form_id}",
+            file=sys.stderr,
         )
         sys.exit(1)
-    with path.open(encoding="utf-8") as snapshot_file:
-        snap = json.load(snapshot_file)
+    snap = read_json(path)
 
     snap["_snapshot_path"] = str(path)
 
@@ -241,10 +242,20 @@ def execute_operation(
 
     try:
         OP_MAP[op_name](form_id, op, snap)
-        snap = refresh_snapshot(form_id, snapshot_path=snapshot_path)
     except (GwsCommandError, OperationSpecError) as error:
         print(f"  [ERROR] {op_name}: {error}", file=sys.stderr)
         return False, snap
+
+    # The op is already applied; reporting it as failed would invite a retry
+    # that duplicates the change.
+    try:
+        snap = refresh_snapshot(form_id, snapshot_path=snapshot_path)
+    except GwsCommandError as error:
+        print(
+            f"  [WARN] {op_name} was applied, but refreshing the snapshot failed: "
+            f"{error}\n         Re-run form_fetcher.py before more index operations.",
+            file=sys.stderr,
+        )
     return True, snap
 
 
@@ -261,7 +272,10 @@ def main() -> int:
         "--snapshot",
         type=Path,
         default=None,
-        help="Path to snapshot JSON (default: <form_id>_snapshot.json in current directory)",
+        help=(
+            "Path to snapshot JSON "
+            "(default: <form_id>_snapshot.json in current directory)"
+        ),
     )
     args = parser.parse_args()
 
@@ -269,8 +283,7 @@ def main() -> int:
         print(f"[ERROR] Spec file not found: {args.spec}", file=sys.stderr)
         sys.exit(1)
 
-    with args.spec.open(encoding="utf-8") as spec_file:
-        spec = json.load(spec_file)
+    spec = read_json(args.spec)
 
     form_id = spec.get("form_id", "").strip()
     if not form_id:
@@ -304,4 +317,8 @@ def main() -> int:
 
 
 if __name__ == "__main__":
-    sys.exit(main())
+    try:
+        sys.exit(main())
+    except (OSError, ValueError) as error:
+        print(f"[ERROR] {error}", file=sys.stderr)
+        sys.exit(1)

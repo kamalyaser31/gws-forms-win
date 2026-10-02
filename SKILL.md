@@ -4,7 +4,9 @@ description: >
   Build, update, and read Google Forms on Windows via gws CLI.
   Automates Google Forms and Quizzes using concise JSON specifications
   and pre-built Python runners. Use when creating forms, adding questions,
-  enabling quiz mode with auto-grading, updating existing forms, or reading responses.
+  enabling quiz mode with auto-grading, updating existing forms, or reading
+  responses, including Arabic requests such as نموذج جوجل، اختبار، استبيان،
+  or قراءة الردود.
 ---
 
 # gws-forms-win
@@ -52,7 +54,10 @@ python scripts/json_runner.py form.json --history
 ```
 
 - Outputs Edit URL and Responder URL to `stdout`.
-- Optional `--history [PATH]` records form metadata to `forms_history.json` in current directory.
+- Optional `--history [PATH]` records form metadata to `forms_history.json` in current directory; a `"history_path"` key in the spec does the same.
+- The spec is validated before anything is created: an unknown type, a missing required key, a `correct` answer that is not one of the `options`, or `correct` without `"quiz": true` stops the run with a clear `[ERROR]` and creates no form.
+- If the form is created but adding its items fails, the error includes the empty form's Edit URL. Delete that form or finish it with `form_updater.py`; do not rerun blindly, or a second form is created.
+- Large forms are sent in several requests automatically, because Windows caps one command line at 32,767 characters.
 
 ---
 
@@ -72,7 +77,7 @@ python scripts/json_runner.py form.json --history
 | `video` | `title`, `uri` | `caption`, `align`, `width` |
 | `image` | `title`, `uri` | `alt`, `align`, `width` |
 
-> **Quiz grading:** Adding `"correct"` to any `mcq` item automatically attaches grading feedback (quiz mode must be `true`).
+> **Quiz grading:** Adding `"correct"` to any `mcq` item attaches grading; the spec must set `"quiz": true`, and `correct` must match an option exactly. A `CHECKBOX` question may take a list: `"correct": ["A", "C"]`. `shuffle` is honored on graded questions too.
 
 ---
 
@@ -113,6 +118,9 @@ python scripts/form_updater.py update.json
 python scripts/form_updater.py update.json -s path/to/snapshot.json
 ```
 
+- A `"snapshot_path"` key in `update.json` works like `-s`.
+- Every successful op refreshes the snapshot. If only the refresh fails, the op is still counted as done and a `[WARN]` asks you to re-run `form_fetcher.py`; do not repeat that op.
+
 ---
 
 ## 4. Reading Form Responses
@@ -127,6 +135,9 @@ python scripts/form_reader.py --id <FORM_ID> -o custom_responses.json
 
 - Output: `<form_id>_responses.json` in current working directory (or specified `-o` / `--output` path).
 - Preserves respondent emails, individual answer values, file upload metadata, total scores, and grades.
+- Each answer carries its question `title` (grid rows as `Grid — Row`), so the file reads without a snapshot.
+
+> **Locating gws:** the scripts find `run.js` next to the `gws` command on PATH (covers nvm and custom npm prefixes). Override with the `GWS_FORMS_GWS_JS` and `GWS_FORMS_NODE_EXE` environment variables.
 
 ---
 

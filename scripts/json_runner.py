@@ -25,6 +25,7 @@ sys.path.insert(0, str(SKILL_SCRIPTS))
 from form_builder import (  # noqa: E402
     GwsCommandError,
     build_form,
+    read_json,
     write_json_atomic,
 )
 
@@ -34,8 +35,7 @@ from form_builder import (  # noqa: E402
 def append_history(history_path: Path, entry: dict) -> None:
     history = []
     if history_path.exists():
-        with history_path.open(encoding="utf-8") as history_file:
-            history = json.load(history_file)
+        history = read_json(history_path)
         if not isinstance(history, list):
             raise ValueError("history file must contain a JSON array")
     history.append(entry)
@@ -81,15 +81,16 @@ def main():
         const="forms_history.json",
         default=None,
         metavar="PATH",
-        help="Record form creation metadata to history file (default: forms_history.json in current directory)",
+        help=(
+            "Record form creation metadata to history file "
+            "(default: forms_history.json in current directory)"
+        ),
     )
     args = parser.parse_args()
 
-    with args.spec.open(encoding="utf-8") as spec_file:
-        spec = json.load(spec_file)
-
-    title = spec["title"]
+    spec = read_json(args.spec)
     created_form = build_form(spec)
+    title = spec["title"]
 
     print_created_form(created_form)
 
@@ -107,3 +108,6 @@ if __name__ == "__main__":
     except GwsCommandError as error:
         print(f"[ERROR] {error}", file=sys.stderr)
         sys.exit(error.returncode)
+    except (OSError, ValueError) as error:
+        print(f"[ERROR] {error}", file=sys.stderr)
+        sys.exit(1)

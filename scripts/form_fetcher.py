@@ -109,7 +109,10 @@ def main():
         "--output",
         default="",
         metavar="PATH",
-        help="Output snapshot file path (default: <form_id>_snapshot.json in current directory)",
+        help=(
+            "Output snapshot file path "
+            "(default: <form_id>_snapshot.json in current directory)"
+        ),
     )
     args = parser.parse_args()
 
@@ -141,3 +144,6 @@ if __name__ == "__main__":
     except GwsCommandError as error:
         print(f"[ERROR] {error}", file=sys.stderr)
         sys.exit(error.returncode)
+    except OSError as error:
+        print(f"[ERROR] {error}", file=sys.stderr)
+        sys.exit(1)

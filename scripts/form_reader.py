@@ -14,7 +14,8 @@ Output:
 Rules:
     - Fully paginates via nextPageToken — no response limit.
     - Rejects /e/ encoded viewform URLs (can't extract form_id).
-    - Does NOT require a snapshot — completely independent.
+    - Does NOT require a snapshot: it fetches the form itself to label each
+      answer with its question title.
 """
 
 import argparse
@@ -28,23 +29,35 @@ sys.path.insert(0, str(SKILL_DIR))
 from form_builder import (  # noqa: E402
     GwsCommandError,
     extract_form_id,
+    get_form,
     list_responses,
     write_json_atomic,
 )
 
-# ─── Response fetching ────────────────────────────────────────────────────────
-fetch_all_responses = list_responses
-
-
 # ─── Response normalisation ───────────────────────────────────────────────────
 
 
-def normalise_response(raw_resp: dict) -> dict:
+def question_titles(raw_form: dict) -> dict:
+    """Map each questionId to a readable title; grid rows get 'Grid — Row'."""
+    titles = {}
+    for item in raw_form.get("items", []):
+        item_title = item.get("title", "")
+        question = item.get("questionItem", {}).get("question", {})
+        if "questionId" in question:
+            titles[question["questionId"]] = item_title
+        for row in item.get("questionGroupItem", {}).get("questions", []):
+            row_title = row.get("rowQuestion", {}).get("title", "")
+            titles[row.get("questionId", "")] = f"{item_title} — {row_title}"
+    return titles
+
+
+def normalise_response(raw_resp: dict, titles: dict) -> dict:
     """Flatten a raw FormResponse into a clean dict."""
     answers = {}
     for q_id, ans_block in raw_resp.get("answers", {}).items():
         answer = {
             "questionId": ans_block.get("questionId", q_id),
+            "title": titles.get(q_id, ""),
             "textAnswers": [
                 a.get("value", "")
                 for a in ans_block.get("textAnswers", {}).get("answers", [])
@@ -93,7 +106,10 @@ def main():
         "--output",
         default="",
         metavar="PATH",
-        help="Output file path (default: <form_id>_responses.json in current directory)",
+        help=(
+            "Output file path "
+            "(default: <form_id>_responses.json in current directory)"
+        ),
     )
     args = parser.parse_args()
 
@@ -110,8 +126,9 @@ def main():
     if args.after:
         print(f"     Filter  : after {args.after}")
 
-    raw_responses = fetch_all_responses(form_id, after=args.after)
-    clean = [normalise_response(r) for r in raw_responses]
+    titles = question_titles(get_form(form_id))
+    raw_responses = list_responses(form_id, after=args.after)
+    clean = [normalise_response(r, titles) for r in raw_responses]
 
     output = {
         "form_id": form_id,
@@ -132,3 +149,6 @@ if __name__ == "__main__":
     except GwsCommandError as error:
         print(f"[ERROR] {error}", file=sys.stderr)
         sys.exit(error.returncode)
+    except OSError as error:
+        print(f"[ERROR] {error}", file=sys.stderr)
+        sys.exit(1)
