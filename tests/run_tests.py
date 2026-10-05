@@ -40,6 +40,7 @@ from form_builder import (  # noqa: E402
     resolve_gws_js,
     resolve_node_exe,
     run_gws,
+    set_publish,
     update_form_info_request,
 )
 from form_fetcher import build_snapshot  # noqa: E402
@@ -120,6 +121,19 @@ class TestFormInfoRequest(unittest.TestCase):
         self.assertIn("title", mask)
         self.assertIn("description", mask)
         self.assertIn("documentTitle", mask)
+
+
+class TestPublishSettings(unittest.TestCase):
+    def test_set_publish_nests_flags_under_publish_state(self):
+        with patch("form_builder.run_gws", return_value={}) as mock_run_gws:
+            set_publish("f", published=True, accepting=False)
+        body = mock_run_gws.call_args.kwargs["json_body"]
+        self.assertEqual(
+            body["publishSettings"],
+            {"publishState": {"isPublished": True, "isAcceptingResponses": False}},
+        )
+        self.assertEqual(body["updateMask"], "publishState")
+        self.assertEqual(mock_run_gws.call_args.kwargs["params"], {"formId": "f"})
 
 
 class TestSnapshotBuilder(unittest.TestCase):

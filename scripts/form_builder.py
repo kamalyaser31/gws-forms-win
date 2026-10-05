@@ -350,14 +350,17 @@ def enable_quiz(form_id: str) -> dict:
 
 def set_publish(form_id: str, published: bool = True, accepting: bool = True) -> dict:
     """Publish or unpublish a form (not supported on legacy forms)."""
+    # The API nests both flags under publishState; the flat shape is rejected.
     return run_gws(
         ["forms", "forms", "setPublishSettings"],
         json_body={
             "publishSettings": {
-                "isPublished": published,
-                "isAcceptingResponses": accepting,
+                "publishState": {
+                    "isPublished": published,
+                    "isAcceptingResponses": accepting,
+                },
             },
-            "updateMask": "*",
+            "updateMask": "publishState",
         },
         params={"formId": form_id},
     )

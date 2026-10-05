@@ -1,5 +1,6 @@
 # سجل التغييرات (CHANGELOG)
 
+- **2026-10-05**: `fix: send publish settings under publishState` - صار Google يرفض `isPublished` و`isAcceptingResponses` مباشرة تحت `publishSettings`، فلم تعمل عملية `set_publish` قط؛ نُقلتا تحت `publishState` بقناع `publishState`، وتحقق النشر حياً، وأضيف اختبار للطلب.
 - **2026-10-02**: `refactor: simplify form_updater.py and json_runner.py` - يُحسم مسار اللقطة مرة واحدة ويُمرَّر صريحاً بدل المفتاح الخفي `_snapshot_path`، وحُذف البحث في مجلدين لا يكتب إليهما شيء، وتوحّد توقيع المعالِجات فسقطت أغلفة `lambda`، وحُذف `SKILL_ROOT` غير المستعمل.
 - **2026-10-02**: `refactor: simplify form_builder.py` - غلاف واحد لطلبات الأسئلة، وجدول واحد للأنواع ومفاتيحها، وحذف التوقيع الثاني لـ `build_form` و`include_form` والمتغيرات غير المستعملة؛ من 695 سطراً إلى 574، والمخرجات مطابقة بايتاً ببايت.
 - **2026-10-02**: `fix: send the --after timestamp unquoted` - كان Google يرفض المرشح المقتبَس بـ `Unparseable date`، فلم يعمل `--after` قط؛ تُحقِّق منه حياً، وأُضيف اختبار (31).
